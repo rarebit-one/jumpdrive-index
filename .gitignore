@@ -1,0 +1,17 @@
+# Build output
+/dist/
+/jumpdrive-index
+/starchart
+
+# Local env / secrets (never commit)
+.env
+*.local
+
+# SQLite runtime artifacts
+*.db
+*.db-wal
+*.db-shm
+
+# Go
+*.test
+*.out
