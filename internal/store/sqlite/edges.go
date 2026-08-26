@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rarebit-one/jumpdrive-index/internal/access"
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
 )
@@ -134,12 +133,6 @@ func scanEdge(row scanner) (domain.Edge, error) {
 	}
 	ed.CreatedAt = parseTS(cAt)
 	return ed, nil
-}
-
-// Neighbors is a later milestone: a bounded recursive traversal that applies the
-// access filter to edges AND nodes at every hop.
-func (s *Store) Neighbors(ctx context.Context, af access.Filter, q store.NeighborQuery) (store.Subgraph, error) {
-	return store.Subgraph{}, store.ErrNotImplemented
 }
 
 // RetractEdge is a later milestone.
