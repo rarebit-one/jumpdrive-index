@@ -1,19 +1,30 @@
-// Command jumpdrive-index is the entrypoint for the knowledge-graph index
-// service. Following jumpdrive-broker's shape, main() is tiny: it wires logging,
-// then delegates to run() so every failure path returns an error rather than
-// calling os.Exit mid-stack.
-//
-// This is a scaffold: it loads and validates config and reports the resolved
-// mode. The HTTP/MCP server, the storage adapters, and the access model are
-// wired in subsequent milestones.
+// Command jumpdrive-index is the service entrypoint. main() is tiny and delegates
+// to run() so every failure returns an error rather than calling os.Exit mid-stack
+// (jumpdrive-broker's shape). It assembles the stack from config: a storage
+// backend (sqlite | postgres) under an access model (starchart | jumpdrive),
+// wrapped by the service authorization layer, exposed as an MCP endpoint over
+// HTTP. MODE=migrate runs migrations and exits; MODE=serve serves.
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"github.com/rarebit-one/jumpdrive-index/internal/access"
+	"github.com/rarebit-one/jumpdrive-index/internal/access/jumpdrive"
+	"github.com/rarebit-one/jumpdrive-index/internal/access/starchart"
 	"github.com/rarebit-one/jumpdrive-index/internal/config"
+	"github.com/rarebit-one/jumpdrive-index/internal/httpapi"
+	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
+	"github.com/rarebit-one/jumpdrive-index/internal/service"
+	"github.com/rarebit-one/jumpdrive-index/internal/store"
+	"github.com/rarebit-one/jumpdrive-index/internal/store/postgres"
+	"github.com/rarebit-one/jumpdrive-index/internal/store/sqlite"
 )
 
 func main() {
@@ -29,15 +40,82 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
-	log.Info("jumpdrive-index configured",
-		"mode", cfg.Mode,
-		"backend", cfg.Backend,
-		"identity", cfg.IdentityMode,
-		"addr", cfg.HTTPAddr,
-		"auth", cfg.AuthEnabled,
-	)
-	// TODO(M0+): open store (backend), wire access model (identity), start
-	// HTTP+MCP server, or run migrations when Mode==migrate.
-	log.Info("scaffold: server not yet implemented")
-	return nil
+
+	ctx := context.Background()
+	st, err := openStore(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	if cfg.Mode == config.ModeMigrate {
+		if err := st.Migrate(ctx); err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+		log.Info("migrations applied", "backend", cfg.Backend)
+		return nil
+	}
+
+	// Serve mode: read the projection head up front so a store that never migrated
+	// fails loudly here rather than on the first request.
+	head, err := st.ProjectionHead(ctx)
+	if err != nil {
+		return fmt.Errorf("projection head: %w (did you run MODE=migrate?)", err)
+	}
+
+	am, err := buildAccessModel(cfg)
+	if err != nil {
+		return fmt.Errorf("access model: %w", err)
+	}
+
+	srv := httpapi.New(mcp.New(service.New(st, am)), log)
+
+	sigctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	log.Info("jumpdrive-index serving",
+		"addr", cfg.HTTPAddr, "backend", cfg.Backend, "identity", cfg.IdentityMode,
+		"auth", cfg.AuthEnabled, "projection_head", head)
+	return srv.Serve(sigctx, cfg.HTTPAddr)
+}
+
+// openStore opens the configured storage backend behind the store.Store seam.
+func openStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
+	switch cfg.Backend {
+	case config.BackendSQLite:
+		path := cfg.DSN
+		if path == "" {
+			path = "jumpdrive-index.db"
+		}
+		return sqlite.Open(sqlite.Options{Path: path, Thresholds: cfg.Thresholds})
+	case config.BackendPostgres:
+		return postgres.Open(ctx, postgres.Options{DSN: cfg.DSN, Thresholds: cfg.Thresholds})
+	default:
+		return nil, fmt.Errorf("unknown backend %q", cfg.Backend)
+	}
+}
+
+// buildAccessModel wires the configured identity seam.
+func buildAccessModel(cfg *config.Config) (access.Model, error) {
+	switch cfg.IdentityMode {
+	case config.IdentityStarchart:
+		var scfg starchart.Config
+		if cfg.PrincipalsFile != "" {
+			b, err := os.ReadFile(cfg.PrincipalsFile)
+			if err != nil {
+				return nil, fmt.Errorf("read principals file: %w", err)
+			}
+			if err := json.Unmarshal(b, &scfg); err != nil {
+				return nil, fmt.Errorf("parse principals file: %w", err)
+			}
+		}
+		return starchart.New(scfg)
+	case config.IdentityJumpdrive:
+		return jumpdrive.New(jumpdrive.Config{
+			BaseURL:      cfg.JumpdriveURL,
+			SharedSecret: os.Getenv("JDX_JUMPDRIVE_SECRET"),
+		})
+	default:
+		return nil, fmt.Errorf("unknown identity mode %q", cfg.IdentityMode)
+	}
 }
