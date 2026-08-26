@@ -25,6 +25,11 @@ var (
 	ErrNotFound      = errors.New("store: not found")
 	ErrConflict      = errors.New("store: conflicts with an existing row")
 	ErrDuplicateFact = errors.New("store: dedupe key already appended") // idempotent replay
+	ErrInvalidInput  = errors.New("store: invalid input")
+	// ErrNotImplemented marks a Store method an adapter has not yet built. It lets
+	// an adapter satisfy the full interface (so `var _ Store` holds) while methods
+	// land milestone by milestone; the conformance suite skips unimplemented ones.
+	ErrNotImplemented = errors.New("store: not implemented")
 )
 
 // AppendEntityInput carries a candidate entity plus the resolve policy. The store

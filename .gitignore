@@ -3,6 +3,9 @@
 /jumpdrive-index
 /starchart
 
+# Local git worktrees (rarebit-one worktree-only workflow)
+/.worktrees/
+
 # Local env / secrets (never commit)
 .env
 *.local

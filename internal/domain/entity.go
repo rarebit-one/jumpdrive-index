@@ -9,7 +9,10 @@
 // that the resolve decision stays a pure function of its inputs.
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // EntityID is an internal, stable identifier for an entity (a UUIDv7 string,
 // minted by the store). The domain never generates one; it only carries it.
@@ -117,7 +120,7 @@ type Embedding struct {
 type Entity struct {
 	ID          EntityID
 	Type        Type
-	Props       []byte // JSON-LD property bag (json.RawMessage semantics)
+	Props       json.RawMessage // JSON-LD property bag; marshals as raw JSON (not base64)
 	ExternalIDs []ExternalID
 	Provenance  Provenance
 	Space       SpaceID
