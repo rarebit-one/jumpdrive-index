@@ -135,7 +135,23 @@ func scanEdge(row scanner) (domain.Edge, error) {
 	return ed, nil
 }
 
-// RetractEdge is a later milestone.
+// RetractEdge tombstones an edge: removes it from the projection and appends an
+// edge.retracted fact (the fact log retains it).
 func (s *Store) RetractEdge(ctx context.Context, id domain.EdgeID, actor domain.PrincipalID, dedupeKey string) error {
-	return store.ErrNotImplemented
+	if dedupeKey == "" {
+		dedupeKey = fmt.Sprintf("%s|retract", id)
+	}
+	ts := s.now()
+	tx, err := s.write.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM edges WHERE id=?`, string(id)); err != nil {
+		return err
+	}
+	if err := s.insertFact(ctx, tx, domain.FactEdgeRetracted, string(id), domain.WriterID(actor), dedupeKey, []byte(`{}`), actor, ts); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
