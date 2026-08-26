@@ -63,6 +63,20 @@ func (s *Server) registerTools() {
 			})
 		})
 
+	reg("search", "Full-text search over entities the caller may see, ranked by relevance.",
+		`{"type":"object","properties":{"text":{"type":"string"},"type":{"type":"string"},"limit":{"type":"integer"}},"required":["text"]}`,
+		func(ctx context.Context, bearer string, args json.RawMessage) (any, error) {
+			var a struct {
+				Text  string `json:"text"`
+				Type  string `json:"type"`
+				Limit int    `json:"limit"`
+			}
+			if err := json.Unmarshal(args, &a); err != nil {
+				return nil, err
+			}
+			return s.svc.Search(ctx, bearer, service.SearchQuery{Text: a.Text, Type: domain.Type(a.Type), Limit: a.Limit})
+		})
+
 	reg("create_entity", "Assert an entity (resolve-before-create: dedups by external id / vector). Owner is the caller.",
 		entitySchema,
 		func(ctx context.Context, bearer string, args json.RawMessage) (any, error) {

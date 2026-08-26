@@ -78,6 +78,23 @@ func (s *Service) Neighbors(ctx context.Context, bearer string, q store.Neighbor
 	return s.store.Neighbors(ctx, af, q)
 }
 
+// SearchQuery drives full-text search over entities.
+type SearchQuery struct {
+	Text  string
+	Type  domain.Type
+	Limit int
+}
+
+// Search runs an access-filtered full-text search, ranked by relevance.
+// (Semantic/hybrid search arrives with the embedder.)
+func (s *Service) Search(ctx context.Context, bearer string, q SearchQuery) ([]store.ScoredEntity, error) {
+	_, af, err := s.auth(bearer)
+	if err != nil {
+		return nil, err
+	}
+	return s.store.FullTextSearch(ctx, af, store.TextQuery{Text: q.Text, Type: q.Type, Limit: q.Limit})
+}
+
 // ---- writes (authorized) ----
 
 // CreateEntityInput is the surface-facing shape for asserting an entity. Owner and
