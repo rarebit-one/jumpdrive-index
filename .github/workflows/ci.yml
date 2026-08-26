@@ -84,11 +84,49 @@ jobs:
       # (incl. the cross-adapter conformance matrix) under one target.
       - run: make demo
 
+  # Runs the SAME conformance matrix against a real Postgres, so the two storage
+  # adapters cannot diverge. The `test`/`acceptance` jobs above run it against
+  # SQLite (and the Postgres test self-skips there, JDX_TEST_DATABASE_URL unset).
+  test-postgres:
+    name: conformance (postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jdx
+          POSTGRES_PASSWORD: jdx
+          POSTGRES_DB: jdx_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jdx" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      JDX_TEST_DATABASE_URL: postgres://jdx:jdx@localhost:5432/jdx_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      # A silently-skipped gate can pass as green: run the suite verbosely and
+      # assert the core Postgres subtests actually ran, not skipped.
+      - name: run + assert the Postgres conformance actually ran
+        run: |
+          go test -race -count=1 -v ./internal/store/postgres/ -run TestPostgresConformance | tee /tmp/pg.log
+          if grep -qE -- '--- SKIP: TestPostgresConformance($|[^/])' /tmp/pg.log; then
+            echo "Postgres conformance skipped — the DB URL did not take" >&2; exit 1
+          fi
+          for sub in insert_and_get external_collision_merges access_filter_hides_private rebuild_reproduces_projection; do
+            grep -q -- "--- PASS: TestPostgresConformance/$sub" /tmp/pg.log || {
+              echo "Postgres conformance subtest '$sub' did not run+pass" >&2; exit 1; }
+          done
+
   # Aggregate status so branch protection needs exactly one required check.
   ci:
     name: ci
     if: always()
-    needs: [lint, test, build, acceptance]
+    needs: [lint, test, build, acceptance, test-postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
