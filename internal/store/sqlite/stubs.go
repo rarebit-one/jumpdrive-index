@@ -13,13 +13,6 @@ import (
 // today (var _ store.Store holds) while the surface lands incrementally; the
 // conformance suite skips a capability that reports ErrNotImplemented.
 
-// SemanticSearch will run brute-force Go KNN over the float32-blob embeddings,
-// access-filtered (filter-then-rank). Wiring it also lights up resolve's vector
-// band.
-func (s *Store) SemanticSearch(ctx context.Context, af access.Filter, q store.VectorQuery) ([]store.ScoredEntity, error) {
-	return nil, store.ErrNotImplemented
-}
-
 // FullTextSearch will run FTS5 over an entities_fts virtual table synced at fold
 // time.
 func (s *Store) FullTextSearch(ctx context.Context, af access.Filter, q store.TextQuery) ([]store.ScoredEntity, error) {
