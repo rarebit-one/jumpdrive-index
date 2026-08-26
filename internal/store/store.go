@@ -78,6 +78,7 @@ type Subgraph struct {
 // VectorQuery / TextQuery drive the two search modes; hybrid fuses them in Go.
 type VectorQuery struct {
 	Vector []float32
+	Model  string      // the embedding space the query vector lives in (e.g. "text-embedding-3-small@1536")
 	Type   domain.Type // optional same-type constraint
 	Limit  int
 }

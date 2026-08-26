@@ -80,7 +80,19 @@ func (s *Store) AppendEntityFact(ctx context.Context, in store.AppendEntityInput
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
-	decision, err := domain.Resolve(cand, domain.ResolveInputs{ExternalIDHits: extHits}, policy, s.th)
+	// Vector neighbours only when an external id did not already resolve it (they
+	// are authoritative) and the candidate carries an embedding. The KNN is
+	// unfiltered — dedup must consider all same-type candidates, like the
+	// external-id lookup above.
+	var neighbors []domain.ScoredMatch
+	if policy == domain.ResolveAuto && len(extHits) == 0 && len(cand.Embeddings) > 0 {
+		emb := cand.Embeddings[0]
+		neighbors, err = s.knnByModel(ctx, tx, emb.Model, cand.Type, nil, emb.Vector, 5)
+		if err != nil {
+			return store.ResolveResult{}, err
+		}
+	}
+	decision, err := domain.Resolve(cand, domain.ResolveInputs{ExternalIDHits: extHits, VectorNeighbors: neighbors}, policy, s.th)
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
@@ -88,15 +100,42 @@ func (s *Store) AppendEntityFact(ctx context.Context, in store.AppendEntityInput
 	var result store.ResolveResult
 	switch decision.Action {
 	case domain.ActionInsertNew, domain.ActionInsertFlagged:
-		// InsertFlagged's sameAs? edge needs the vector stage; until then it
-		// behaves as InsertNew (resolve only returns it on a vector hit, which
-		// cannot occur yet).
 		cand.ID = domain.EntityID(s.newID())
 		if err := upsertEntitySnapshot(ctx, tx, cand, ts); err != nil {
 			return store.ResolveResult{}, err
 		}
 		if err := s.appendEntityFact(ctx, tx, cand, in.Writer, dedupeKey, in.Actor, ts); err != nil {
 			return store.ResolveResult{}, err
+		}
+		// A review-band vector hit: create the node, but record an INFERRED
+		// sameAs? edge to the near-duplicate so a human/agent can later confirm or
+		// reject the identity. We never auto-merge in this band (a false merge is
+		// dear to undo); the flag is a soft signal, not a decision.
+		if decision.Action == domain.ActionInsertFlagged && decision.FlagTo != "" {
+			edge := domain.Edge{
+				ID:         domain.EdgeID(s.newID()),
+				Predicate:  "sameAs?",
+				From:       cand.ID,
+				To:         decision.FlagTo,
+				Space:      cand.Space,
+				Owner:      cand.Owner,
+				Visibility: cand.Visibility,
+				Provenance: domain.Provenance{
+					Asserter: string(in.Writer), Method: domain.Inferred,
+					Source: "resolve:vector-review", Confidence: decision.FlagScore, AssertedAt: ts,
+				},
+			}
+			if err := upsertEdgeSnapshot(ctx, tx, edge, ts); err != nil {
+				return store.ResolveResult{}, err
+			}
+			payload, err := json.Marshal(edge)
+			if err != nil {
+				return store.ResolveResult{}, err
+			}
+			ek := fmt.Sprintf("%s|sameas|%s", dedupeKey, decision.FlagTo)
+			if err := s.insertFact(ctx, tx, domain.FactEdgeAsserted, string(edge.ID), in.Writer, ek, payload, in.Actor, ts); err != nil {
+				return store.ResolveResult{}, err
+			}
 		}
 		result = store.ResolveResult{Action: decision.Action, MatchKind: decision.MatchKind}
 

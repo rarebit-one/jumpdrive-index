@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
@@ -41,6 +42,8 @@ func RunStoreSuite(t *testing.T, open OpenFunc) {
 	t.Run("access_filter_hides_private", func(t *testing.T) { testAccessFilter(t, open(t)) })
 	t.Run("edge_append_and_idempotency", func(t *testing.T) { testEdge(t, open(t)) })
 	t.Run("rebuild_reproduces_projection", func(t *testing.T) { testRebuild(t, open(t)) })
+	t.Run("vector_resolve_two_band", func(t *testing.T) { testVectorResolve(t, open(t)) })
+	t.Run("semantic_search_ranks_and_filters", func(t *testing.T) { testSemanticSearch(t, open(t)) })
 }
 
 var ctx = context.Background()
@@ -61,6 +64,26 @@ func mkEntity(typ, name, vis, owner string, ext ...domain.ExternalID) domain.Ent
 		Owner:       domain.PrincipalID(owner),
 		ExternalIDs: ext,
 	}
+}
+
+// vecAt returns the 2-D unit vector [c, sqrt(1-c^2)], whose cosine with the base
+// vector [1,0] is exactly c — a deterministic way to hit a target similarity.
+func vecAt(c float32) []float32 {
+	return []float32{c, float32(math.Sqrt(float64(1 - c*c)))}
+}
+
+func mkEntityVec(typ, name, vis, owner, model string, vec []float32, ext ...domain.ExternalID) domain.Entity {
+	e := mkEntity(typ, name, vis, owner, ext...)
+	e.Embeddings = []domain.Embedding{{Model: model, Field: "name", Vector: vec}}
+	return e
+}
+
+// vectorsSupported probes whether the adapter implements vector search, so the
+// vector subtests skip (rather than fail) on an adapter that hasn't built it yet.
+func vectorsSupported(st store.Store) bool {
+	_, err := st.SemanticSearch(ctx, readAF("probe"),
+		store.VectorQuery{Model: "probe@2", Vector: []float32{1, 0}, Limit: 1})
+	return !errors.Is(err, store.ErrNotImplemented)
 }
 
 func mustAppend(t *testing.T, st store.Store, e domain.Entity, writer, dedupe string) store.ResolveResult {
@@ -215,5 +238,81 @@ func testRebuild(t *testing.T, st store.Store) {
 	}
 	if len(after.ExternalIDs) != 1 || after.ExternalIDs[0].Key() != tmdb.Key() {
 		t.Errorf("rebuild lost/changed external ids: %v", after.ExternalIDs)
+	}
+}
+
+// testVectorResolve exercises resolve's vector two-band. Each band uses a
+// DIFFERENT @type so the same-type KNN cannot cross-match between cases, keeping
+// the outcomes deterministic. Similarity to the base vector [1,0] is set exactly
+// via vecAt.
+func testVectorResolve(t *testing.T, st store.Store) {
+	if !vectorsSupported(st) {
+		t.Skip("adapter has no vector search yet")
+	}
+	const model = "test@2"
+	base := vecAt(1.0)
+
+	// Auto-merge band (cosine 0.97 >= 0.94): attach to the near-duplicate.
+	a1 := mustAppend(t, st, mkEntityVec("Movie", "Alien", "public", "kate", model, base), "kate", "va1")
+	b1 := mustAppend(t, st, mkEntityVec("Movie", "Alien (dup)", "public", "kate", model, vecAt(0.97)), "kate", "vb1")
+	if b1.Action != domain.ActionAttach || b1.MatchKind != domain.MatchVector {
+		t.Errorf("auto band: action=%s kind=%s, want attach/vector", b1.Action, b1.MatchKind)
+	}
+	if b1.Entity.ID != a1.Entity.ID {
+		t.Errorf("auto band: attached to %q, want existing %q", b1.Entity.ID, a1.Entity.ID)
+	}
+
+	// Review band (0.86 <= 0.90 < 0.94): insert a NEW node, never merge.
+	a2 := mustAppend(t, st, mkEntityVec("Book", "Dune", "public", "kate", model, base), "kate", "va2")
+	b2 := mustAppend(t, st, mkEntityVec("Book", "Dune?", "public", "kate", model, vecAt(0.90)), "kate", "vb2")
+	if b2.Action != domain.ActionInsertFlagged {
+		t.Errorf("review band: action=%s, want insert_flagged", b2.Action)
+	}
+	if b2.Entity.ID == a2.Entity.ID {
+		t.Error("review band must NOT merge — a false merge is dear to undo")
+	}
+
+	// Below the review floor (0.80 < 0.86): a plain new node, no flag.
+	a3 := mustAppend(t, st, mkEntityVec("Article", "Essay", "public", "kate", model, base), "kate", "va3")
+	b3 := mustAppend(t, st, mkEntityVec("Article", "Other essay", "public", "kate", model, vecAt(0.80)), "kate", "vb3")
+	if b3.Action != domain.ActionInsertNew {
+		t.Errorf("below band: action=%s, want insert_new", b3.Action)
+	}
+	if b3.Entity.ID == a3.Entity.ID {
+		t.Error("below band must not attach")
+	}
+}
+
+// testSemanticSearch checks the public KNN ranks by similarity and applies the
+// access filter (filter-then-rank): a non-owner never sees another principal's
+// private entity even if it is the closest match.
+func testSemanticSearch(t *testing.T, st store.Store) {
+	if !vectorsSupported(st) {
+		t.Skip("adapter has no vector search yet")
+	}
+	const model = "srch@2"
+	mustAppend(t, st, mkEntityVec("Movie", "near", "public", "kate", model, vecAt(0.98)), "kate", "s1")
+	mustAppend(t, st, mkEntityVec("Movie", "far", "public", "kate", model, vecAt(0.10)), "kate", "s2")
+	// alice's private entity is the CLOSEST match, but kate must not see it.
+	mustAppend(t, st, mkEntityVec("Movie", "secret", "private", "alice", model, vecAt(0.99)), "alice", "s3")
+
+	hits, err := st.SemanticSearch(ctx, readAF("kate"),
+		store.VectorQuery{Model: model, Vector: vecAt(1.0), Type: "Movie", Limit: 10})
+	if err != nil {
+		t.Fatalf("SemanticSearch: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("got %d hits, want 2 (the two public movies)", len(hits))
+	}
+	if extractName(hits[0].Entity.Props) != "near" {
+		t.Errorf("top hit = %q, want \"near\" (highest cosine)", extractName(hits[0].Entity.Props))
+	}
+	for _, h := range hits {
+		if extractName(h.Entity.Props) == "secret" {
+			t.Error("access leak: kate must not see alice's private entity in search")
+		}
+		if h.Score < 0 || h.Score > 1.0001 {
+			t.Errorf("cosine score out of range: %v", h.Score)
+		}
 	}
 }
