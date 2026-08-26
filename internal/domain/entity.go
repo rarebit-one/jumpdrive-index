@@ -25,6 +25,7 @@ type Type string
 // carries its own Visibility independent of its endpoints.
 type Visibility string
 
+// Visibility values, ordered least to most permissive.
 const (
 	VisPrivate Visibility = "private" // owner (+ explicit grants) only
 	VisSpace   Visibility = "space"   // any principal who is a member of the entity's Space
@@ -58,6 +59,7 @@ type PrincipalID string
 // that mixes hand-entered facts with AI guesses.
 type AssertMethod string
 
+// AssertMethod values.
 const (
 	Asserted AssertMethod = "asserted"
 	Inferred AssertMethod = "inferred"

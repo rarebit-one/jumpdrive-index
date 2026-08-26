@@ -18,6 +18,7 @@ import (
 // (racing writers + opaque health timeouts).
 type Mode string
 
+// Mode values.
 const (
 	ModeServe   Mode = "serve"
 	ModeMigrate Mode = "migrate"
@@ -26,6 +27,7 @@ const (
 // Backend selects the storage adapter.
 type Backend string
 
+// Backend values.
 const (
 	BackendSQLite   Backend = "sqlite"   // homelab / Starchart
 	BackendPostgres Backend = "postgres" // hosted
@@ -34,6 +36,7 @@ const (
 // IdentityMode selects the access model.
 type IdentityMode string
 
+// IdentityMode values.
 const (
 	IdentityStarchart IdentityMode = "starchart" // self-contained principals/spaces/lenses
 	IdentityJumpdrive IdentityMode = "jumpdrive" // delegate to Jumpdrive

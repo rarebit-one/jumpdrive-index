@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/rarebit-one/jumpdrive-index/discussions
+    about: Ask about the graph model, deployment (Starchart) or integrations here rather than opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/rarebit-one/jumpdrive-index/security/advisories/new
+    about: Report privately, not as a public issue.

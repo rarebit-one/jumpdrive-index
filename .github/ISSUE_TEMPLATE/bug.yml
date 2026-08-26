@@ -1,0 +1,39 @@
+name: Bug report
+description: Something behaves differently from its documentation or design
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        jumpdrive-index is early — much is unimplemented (`ErrNotImplemented`)
+        rather than broken. Check the README status before filing.
+  - type: input
+    id: version
+    attributes: { label: Version / commit, description: "Release tag or short SHA" }
+    validations: { required: true }
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which build?
+      options:
+        - Starchart (self-hosted, SQLite)
+        - Hosted (Postgres)
+        - Not sure
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got.
+    validations: { required: true }
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, how it is deployed, backend (SQLite/Postgres), and which MCP client if relevant.
+    validations: { required: true }
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: shell

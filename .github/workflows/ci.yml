@@ -1,0 +1,100 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # Build-tagged files are invisible to a lint run on another platform, so
+        # lint every OS the binary is built for.
+        goos: [linux, darwin, windows]
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: amd64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v9
+        with: { version: latest }
+      # A malformed workflow file does not fail — it silently never runs.
+      # actionlint catches that before it can hide a broken pipeline.
+      - name: lint workflow files
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      # -race is non-negotiable: the store's single-writer/reader-pool split is a
+      # concurrency claim, and the cross-adapter conformance suite runs under it.
+      - run: go test -race -count=1 -coverprofile=coverage.out ./...
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      # CGO_ENABLED=0 is load-bearing: the SQLite adapter is pure-Go
+      # (modernc.org/sqlite) precisely so the binary stays static and the
+      # distroless/scratch image works. A build that needs cgo is a regression.
+      - env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /dev/null ./...
+
+  acceptance:
+    name: acceptance (make demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: { go-version-file: go.mod, cache: true }
+      # The milestone gate: gofmt + vet + CGO-off build + the whole test suite
+      # (incl. the cross-adapter conformance matrix) under one target.
+      - run: make demo
+
+  # Aggregate status so branch protection needs exactly one required check.
+  ci:
+    name: ci
+    if: always()
+    needs: [lint, test, build, acceptance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: fail if any job failed
+        run: |
+          if echo '${{ toJSON(needs) }}' | grep -q '"result": *"\(failure\|cancelled\)"'; then
+            echo "one or more ci jobs failed"; exit 1
+          fi
+          echo "all ci jobs passed"

@@ -77,6 +77,7 @@ type VectorQuery struct {
 	Limit  int
 }
 
+// TextQuery drives full-text (FTS) search.
 type TextQuery struct {
 	Text  string
 	Type  domain.Type
@@ -89,11 +90,12 @@ type ScoredEntity struct {
 	Score  float64
 }
 
+// ProposalID identifies a held governed-write proposal.
+type ProposalID string
+
 // Proposal is a held (not-yet-projected) governed write, mirroring jumpdrive's
 // KnowledgePromotion: the exact inputs are stored so an approver can replay them
 // through the normal resolve path.
-type ProposalID string
-
 type Proposal struct {
 	ID       ProposalID
 	Kind     domain.FactKind // entity.asserted | edge.asserted
@@ -102,11 +104,12 @@ type Proposal struct {
 	Payload  []byte // the exact AppendEntityInput/AppendEdgeInput, serialized
 }
 
+// ProposalFilter narrows a proposal listing.
 type ProposalFilter struct {
 	Space domain.SpaceID
 }
 
-// Store is the whole persistence surface. Every read takes an access.AccessFilter
+// Store is the whole persistence surface. Every read takes an access.Filter
 // that becomes a WHERE clause.
 type Store interface {
 	// Lifecycle.
@@ -126,11 +129,11 @@ type Store interface {
 	ListProposals(ctx context.Context, f ProposalFilter) ([]Proposal, error)
 
 	// Reads — access-filtered.
-	GetEntity(ctx context.Context, af access.AccessFilter, id domain.EntityID) (domain.Entity, error)
-	ResolveByExternalID(ctx context.Context, af access.AccessFilter, keys []string) ([]domain.Entity, error)
-	Neighbors(ctx context.Context, af access.AccessFilter, q NeighborQuery) (Subgraph, error)
-	SemanticSearch(ctx context.Context, af access.AccessFilter, q VectorQuery) ([]ScoredEntity, error)
-	FullTextSearch(ctx context.Context, af access.AccessFilter, q TextQuery) ([]ScoredEntity, error)
+	GetEntity(ctx context.Context, af access.Filter, id domain.EntityID) (domain.Entity, error)
+	ResolveByExternalID(ctx context.Context, af access.Filter, keys []string) ([]domain.Entity, error)
+	Neighbors(ctx context.Context, af access.Filter, q NeighborQuery) (Subgraph, error)
+	SemanticSearch(ctx context.Context, af access.Filter, q VectorQuery) ([]ScoredEntity, error)
+	FullTextSearch(ctx context.Context, af access.Filter, q TextQuery) ([]ScoredEntity, error)
 
 	// Projection lifecycle — the projection is a disposable fold of the fact log.
 	RebuildProjection(ctx context.Context) error

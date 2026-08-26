@@ -17,6 +17,7 @@ import (
 // ResolvePolicy is the caller's dedup intent.
 type ResolvePolicy string
 
+// ResolvePolicy values — the caller's dedup intent.
 const (
 	// ResolveAuto: exact external-id match first, then vector similarity.
 	ResolveAuto ResolvePolicy = "auto"
@@ -78,6 +79,7 @@ type ResolveInputs struct {
 // ResolveAction is the verdict.
 type ResolveAction string
 
+// ResolveAction values — what a resolve decision tells the store to do.
 const (
 	ActionInsertNew     ResolveAction = "insert_new"     // no match — create
 	ActionAttach        ResolveAction = "attach"         // fold candidate into Target (union ext ids/props)
@@ -89,6 +91,7 @@ const (
 // write back to the caller/agent).
 type MatchKind string
 
+// MatchKind values.
 const (
 	MatchNone     MatchKind = "none"
 	MatchExternal MatchKind = "exact_external"

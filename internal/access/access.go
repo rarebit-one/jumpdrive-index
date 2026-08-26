@@ -3,7 +3,7 @@
 // presented (SOFT, droppable lenses applied after the ACL). Two implementations
 // live under it: starchart (self-contained principals + spaces + lenses) and
 // jumpdrive (delegates to Jumpdrive's permission model). The store never knows
-// which one it is talking to — it only ever receives an AccessFilter.
+// which one it is talking to — it only ever receives a Filter.
 //
 // This package defines the contract only; the implementations come later.
 package access
@@ -48,11 +48,11 @@ type Guarded struct {
 	Predicate  domain.Predicate // edges only
 }
 
-// AccessFilter is the value object the access model builds and the store consumes
-// as a WHERE clause. It is what makes access default-deny as SQL SHAPE (like the
+// Filter is the value object the access model builds and the store consumes as a
+// WHERE clause. It is what makes access default-deny as SQL SHAPE (like the
 // broker's eligibility JOIN) rather than a fragile post-filter — a row the
 // principal may not see is never returned, even mid-traversal.
-type AccessFilter struct {
+type Filter struct {
 	Principal   domain.PrincipalID
 	Spaces      []domain.SpaceID
 	Restricted  bool
@@ -60,12 +60,12 @@ type AccessFilter struct {
 	AllowPublic bool
 }
 
-// AccessModel resolves identity and answers the hard-ACL questions. Reads pass
-// the derived AccessFilter into the store; write tools consult CanWrite/CanApprove
-// before the store. Deny-by-default: no token → no principal → nothing visible.
-type AccessModel interface {
+// Model resolves identity and answers the hard-ACL questions. Reads pass the
+// derived Filter into the store; write tools consult CanWrite/CanApprove before
+// the store. Deny-by-default: no token → no principal → nothing visible.
+type Model interface {
 	Authenticate(bearer string) (Decision, error)
-	Filter(d Decision) AccessFilter
+	FilterFor(d Decision) Filter
 	CanRead(d Decision, g Guarded) bool
 	CanWrite(d Decision, space domain.SpaceID) bool
 	CanApprove(d Decision, space domain.SpaceID) bool
