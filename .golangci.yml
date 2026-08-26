@@ -1,0 +1,78 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - depguard
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - misspell
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - unused
+
+  settings:
+    errcheck:
+      # Writes to an already-open stdout/stderr have no useful recovery, and
+      # checking each buries the usage text. Every other unchecked error is a
+      # finding.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+    depguard:
+      rules:
+        # The domain layer is the pure vocabulary of the graph. It must import
+        # nothing from the DB, HTTP, access or store layers — that purity is what
+        # makes resolve.go a unit-testable decision and lets a SQL-vs-Go drift
+        # test mean anything. This rule is that invariant, enforced (the comment
+        # at the top of internal/domain says the same in prose).
+        domain-is-pure:
+          files:
+            - "**/internal/domain/**"
+          deny:
+            - pkg: database/sql
+              desc: "the domain must not know how it is persisted — the store layer owns that"
+            - pkg: net/http
+              desc: "the domain must not know its transport — HTTP/MCP live above it"
+            - pkg: os
+              desc: "the domain does no I/O — it is a deterministic vocabulary + decisions"
+            - pkg: path/filepath
+              desc: "the domain never sees a path"
+            - pkg: github.com/rarebit-one/jumpdrive-index/internal/store
+              desc: "dependency runs the other way: store imports domain, never the reverse"
+            - pkg: github.com/rarebit-one/jumpdrive-index/internal/access
+              desc: "the domain must not depend on the access model"
+
+        # The access package defines the identity CONTRACT (interfaces + value
+        # objects). The top-level package must not import the store — the store
+        # consumes an AccessFilter, not the other way round. (Concrete
+        # implementations live in subpackages access/starchart, access/jumpdrive
+        # and may import a DB; this rule guards only the contract package.)
+        access-contract-is-pure:
+          files:
+            - "**/internal/access/*.go"
+          deny:
+            - pkg: github.com/rarebit-one/jumpdrive-index/internal/store
+              desc: "the access contract must not import the store — the store depends on access"
+
+    revive:
+      rules:
+        - name: package-comments
+        - name: exported
+
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters: [gosec]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports

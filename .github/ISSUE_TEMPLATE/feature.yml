@@ -1,0 +1,29 @@
+name: Feature / change
+description: Propose a capability or an architectural change
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What is hard or impossible today, and for whom.
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What you'd like to happen. If it changes an architectural stance, note that an ADR will be needed.
+    validations: { required: true }
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer does this touch?
+      multiple: true
+      options:
+        - domain (vocabulary / resolve)
+        - store (SQLite / Postgres / conformance)
+        - access (principals / spaces / lenses)
+        - mcp / httpapi
+        - integration (heyarr / jumpdrive-web)
+        - tooling / deploy
+    validations: { required: true }

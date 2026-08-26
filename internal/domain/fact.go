@@ -8,6 +8,7 @@ import "time"
 // system of record.
 type FactKind string
 
+// FactKind values — the append-only events the graph folds from.
 const (
 	FactEntityAsserted  FactKind = "entity.asserted"
 	FactEntityRetracted FactKind = "entity.retracted"
