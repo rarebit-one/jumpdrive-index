@@ -46,6 +46,7 @@ func RunStoreSuite(t *testing.T, open OpenFunc) {
 	t.Run("semantic_search_ranks_and_filters", func(t *testing.T) { testSemanticSearch(t, open(t)) })
 	t.Run("neighbors_access_filtered_traversal", func(t *testing.T) { testNeighbors(t, open(t)) })
 	t.Run("governed_propose_approve_reject", func(t *testing.T) { testProposals(t, open(t)) })
+	t.Run("direct_merge_and_attach_prop_union", func(t *testing.T) { testDirectMergeAndPropUnion(t, open(t)) })
 }
 
 var ctx = context.Background()
@@ -66,6 +67,18 @@ func mkEntity(typ, name, vis, owner string, ext ...domain.ExternalID) domain.Ent
 		Owner:       domain.PrincipalID(owner),
 		ExternalIDs: ext,
 	}
+}
+
+func mkEntityProps(typ, propsJSON, vis, owner string, ext ...domain.ExternalID) domain.Entity {
+	e := mkEntity(typ, "", vis, owner, ext...)
+	e.Props = json.RawMessage(propsJSON)
+	return e
+}
+
+func parseProps(p json.RawMessage) map[string]any {
+	var m map[string]any
+	_ = json.Unmarshal(p, &m)
+	return m
 }
 
 // vecAt returns the 2-D unit vector [c, sqrt(1-c^2)], whose cosine with the base
@@ -482,5 +495,59 @@ func testProposals(t *testing.T, st store.Store) {
 	// Deciding a proposal that does not exist.
 	if _, err := st.DecideProposal(ctx, "no-such-proposal", true, "boss"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("deciding a missing proposal: err=%v, want ErrNotFound", err)
+	}
+}
+
+// testDirectMergeAndPropUnion guards two bugs a review surfaced that the
+// collision-via-append path masked: a DIRECT MergeEntities must preserve the
+// dropped entity's external ids (not lose them to a unique-key/cascade race) and
+// must reject a missing endpoint; and an attach must UNION new JSON-LD props into
+// the projection, not drop them into the fact log only.
+func testDirectMergeAndPropUnion(t *testing.T, st store.Store) {
+	xa := domain.ExternalID{Scheme: "tmdb", Value: "m1"}
+	xb := domain.ExternalID{Scheme: "imdb", Value: "ttm2"}
+	a := mustAppend(t, st, mkEntity("Movie", "A", "public", "kate", xa), "kate", "dm-a")
+	b := mustAppend(t, st, mkEntity("Movie", "B", "public", "kate", xb), "kate", "dm-b")
+
+	if err := st.MergeEntities(ctx, a.Entity.ID, b.Entity.ID, "boss", ""); err != nil {
+		t.Fatalf("direct MergeEntities: %v", err)
+	}
+	// The survivor keeps BOTH external ids; the dropped node is gone.
+	for _, x := range []domain.ExternalID{xa, xb} {
+		hits, _ := st.ResolveByExternalID(ctx, readAF("kate"), []string{x.Key()})
+		if len(hits) != 1 || hits[0].ID != a.Entity.ID {
+			t.Errorf("merge lost external id %s (hits=%v)", x.Key(), hits)
+		}
+	}
+	if _, err := st.GetEntity(ctx, readAF("kate"), b.Entity.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("dropped entity should be gone; err=%v", err)
+	}
+
+	// A missing survivor must fail loudly and delete nothing.
+	c := mustAppend(t, st, mkEntity("Movie", "C", "public", "kate"), "kate", "dm-c")
+	if err := st.MergeEntities(ctx, "no-such-keep", c.Entity.ID, "boss", ""); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("merge into a missing survivor: err=%v, want ErrNotFound", err)
+	}
+	if _, err := st.GetEntity(ctx, readAF("kate"), c.Entity.ID); err != nil {
+		t.Errorf("a failed merge must not delete the valid endpoint: %v", err)
+	}
+
+	// Attach unions props: existing values win, the candidate's NEW keys are added.
+	xp := domain.ExternalID{Scheme: "tmdb", Value: "prop1"}
+	p := mustAppend(t, st, mkEntityProps("Movie", `{"name":"Alien","year":1979}`, "public", "kate", xp), "kate", "pu-1")
+	mustAppend(t, st, mkEntityProps("Movie", `{"name":"ALIEN (cut)","director":"Ridley Scott"}`, "public", "kate", xp), "kate", "pu-2")
+	got, err := st.GetEntity(ctx, readAF("kate"), p.Entity.ID)
+	if err != nil {
+		t.Fatalf("GetEntity after attach: %v", err)
+	}
+	props := parseProps(got.Props)
+	if props["name"] != "Alien" {
+		t.Errorf("attach clobbered an existing prop: name=%v, want the original \"Alien\"", props["name"])
+	}
+	if props["director"] != "Ridley Scott" {
+		t.Errorf("attach did not add the candidate's new key: director=%v", props["director"])
+	}
+	if props["year"] == nil {
+		t.Error("attach lost an existing key (year)")
 	}
 }

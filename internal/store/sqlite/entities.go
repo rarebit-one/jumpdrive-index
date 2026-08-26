@@ -210,7 +210,18 @@ func upsertEntitySnapshot(ctx context.Context, tx *sql.Tx, e domain.Entity, ts t
 	case err != nil:
 		return err
 	default:
-		if _, err := tx.ExecContext(ctx, `UPDATE entities SET updated_at=? WHERE id=?`, tsS, string(e.ID)); err != nil {
+		// Re-assertion (an attach): UNION the candidate's JSON-LD props into the
+		// stored props — existing values WIN on a key conflict, the candidate's
+		// NEW keys are added — so re-asserted detail reaches the projection, not
+		// just the fact log. json_patch(candidate, existing) folds deterministically
+		// (shared with RebuildProjection). An empty candidate bag is a no-op.
+		if len(e.Props) > 0 {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE entities SET props=json_patch(?, props), updated_at=? WHERE id=?`,
+				string(e.Props), tsS, string(e.ID)); err != nil {
+				return fmt.Errorf("union props: %w", err)
+			}
+		} else if _, err := tx.ExecContext(ctx, `UPDATE entities SET updated_at=? WHERE id=?`, tsS, string(e.ID)); err != nil {
 			return err
 		}
 	}
@@ -304,17 +315,26 @@ func mergeEntitiesTx(ctx context.Context, tx *sql.Tx, keep, drop domain.EntityID
 	if keep == drop {
 		return nil
 	}
+	// Move drop's external ids / labels / embeddings to keep by REASSIGNMENT, not
+	// insert-and-cascade-delete. The old "INSERT OR IGNORE … SELECT FROM drop"
+	// then "DELETE drop" lost drop's UNIQUE external keys: the insert collided
+	// with drop's still-present row (ignored), then the cascade deleted it. Here we
+	// first delete only the rows keep ALREADY has (the dups), then UPDATE the rest
+	// onto keep (no conflict — keep lacks them and drop is the sole holder), so no
+	// key is ever lost.
 	stmts := []struct {
 		q    string
 		args []any
 	}{
-		{`INSERT OR IGNORE INTO entity_external_ids(entity_id, scheme, value, key)
-		  SELECT ?, scheme, value, key FROM entity_external_ids WHERE entity_id=?`, []any{string(keep), string(drop)}},
-		{`INSERT OR IGNORE INTO embeddings(entity_id, model, field, dim, vector)
-		  SELECT ?, model, field, dim, vector FROM embeddings WHERE entity_id=?`, []any{string(keep), string(drop)}},
+		{`DELETE FROM entity_external_ids WHERE entity_id=? AND key IN (SELECT key FROM entity_external_ids WHERE entity_id=?)`, []any{string(drop), string(keep)}},
+		{`UPDATE entity_external_ids SET entity_id=? WHERE entity_id=?`, []any{string(keep), string(drop)}},
+		{`DELETE FROM entity_labels WHERE entity_id=? AND label IN (SELECT label FROM entity_labels WHERE entity_id=?)`, []any{string(drop), string(keep)}},
+		{`UPDATE entity_labels SET entity_id=? WHERE entity_id=?`, []any{string(keep), string(drop)}},
+		{`DELETE FROM embeddings WHERE entity_id=? AND (model, field) IN (SELECT model, field FROM embeddings WHERE entity_id=?)`, []any{string(drop), string(keep)}},
+		{`UPDATE embeddings SET entity_id=? WHERE entity_id=?`, []any{string(keep), string(drop)}},
 		{`UPDATE edges SET from_id=? WHERE from_id=?`, []any{string(keep), string(drop)}},
 		{`UPDATE edges SET to_id=? WHERE to_id=?`, []any{string(keep), string(drop)}},
-		{`DELETE FROM entities WHERE id=?`, []any{string(drop)}}, // cascades leftover children of drop
+		{`DELETE FROM entities WHERE id=?`, []any{string(drop)}}, // children already moved off drop
 		{`UPDATE entities SET updated_at=? WHERE id=?`, []any{fmtTS(ts), string(keep)}},
 	}
 	for _, st := range stmts {
@@ -336,6 +356,17 @@ func (s *Store) MergeEntities(ctx context.Context, keep, drop domain.EntityID, a
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Both endpoints must exist, or a bad survivor id would silently delete a
+	// valid entity and record a merge-to-nowhere.
+	for _, id := range []domain.EntityID{keep, drop} {
+		var one int
+		switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM entities WHERE id=?`, string(id)).Scan(&one); {
+		case errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("%w: merge endpoint %q", store.ErrNotFound, id)
+		case err != nil:
+			return err
+		}
+	}
 	if err := mergeEntitiesTx(ctx, tx, keep, drop, ts); err != nil {
 		return err
 	}
