@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // EdgeID is an internal, stable identifier for an edge (a UUIDv7 string minted
 // by the store).
@@ -23,7 +26,7 @@ type Edge struct {
 	Predicate  Predicate
 	From       EntityID
 	To         EntityID
-	Props      []byte // optional JSON-LD qualifiers (e.g. a Clip's startOffset/endOffset)
+	Props      json.RawMessage // optional JSON-LD qualifiers (e.g. a Clip's startOffset/endOffset)
 	Provenance Provenance
 	Space      SpaceID
 	Owner      PrincipalID
