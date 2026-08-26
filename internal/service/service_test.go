@@ -47,6 +47,31 @@ func movie(name string, ext ...domain.ExternalID) service.CreateEntityInput {
 	}
 }
 
+func TestSearch(t *testing.T) {
+	s := newService(t)
+	if _, err := s.CreateEntity(ctx, "kate-tok", service.CreateEntityInput{
+		Type: "Movie", Props: []byte(`{"name":"Alien","abstract":"a chestburster erupts"}`),
+		Space: "fam", Visibility: "space", Policy: domain.ResolveAuto,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// kate (member of fam) finds the space-scoped entity.
+	hits, err := s.Search(ctx, "kate-tok", service.SearchQuery{Text: "chestburster", Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("kate got %d hits, want 1", len(hits))
+	}
+	// bob (not in fam) does not — search is access-filtered.
+	if bob, _ := s.Search(ctx, "bob-tok", service.SearchQuery{Text: "chestburster", Limit: 10}); len(bob) != 0 {
+		t.Errorf("bob got %d hits, want 0", len(bob))
+	}
+	if _, err := s.Search(ctx, "nope", service.SearchQuery{Text: "x"}); !errors.Is(err, service.ErrUnauthenticated) {
+		t.Errorf("unauthenticated search: err=%v, want ErrUnauthenticated", err)
+	}
+}
+
 func TestUnauthenticatedRejected(t *testing.T) {
 	s := newService(t)
 	if _, err := s.CreateEntity(ctx, "nope", movie("X")); !errors.Is(err, service.ErrUnauthenticated) {
