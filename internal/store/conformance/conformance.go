@@ -47,6 +47,8 @@ func RunStoreSuite(t *testing.T, open OpenFunc) {
 	t.Run("neighbors_access_filtered_traversal", func(t *testing.T) { testNeighbors(t, open(t)) })
 	t.Run("governed_propose_approve_reject", func(t *testing.T) { testProposals(t, open(t)) })
 	t.Run("direct_merge_and_attach_prop_union", func(t *testing.T) { testDirectMergeAndPropUnion(t, open(t)) })
+	t.Run("full_text_search_ranks_and_filters", func(t *testing.T) { testFullTextSearch(t, open(t)) })
+	t.Run("retract_edge_removes_from_traversal", func(t *testing.T) { testRetractEdge(t, open(t)) })
 }
 
 var ctx = context.Background()
@@ -549,5 +551,67 @@ func testDirectMergeAndPropUnion(t *testing.T, st store.Store) {
 	}
 	if props["year"] == nil {
 		t.Error("attach lost an existing key (year)")
+	}
+}
+
+func fullTextSupported(st store.Store) bool {
+	_, err := st.FullTextSearch(ctx, readAF("probe"), store.TextQuery{Text: "probe", Limit: 1})
+	return !errors.Is(err, store.ErrNotImplemented)
+}
+
+// testFullTextSearch checks FTS matches an entity's text and is access-filtered:
+// a caller never sees another principal's private entity even when it matches.
+func testFullTextSearch(t *testing.T, st store.Store) {
+	if !fullTextSupported(st) {
+		t.Skip("adapter has no full-text search yet")
+	}
+	mustAppend(t, st, mkEntityProps("Movie", `{"name":"Alien","abstract":"a chestburster erupts"}`, "public", "kate"), "kate", "ft1")
+	mustAppend(t, st, mkEntityProps("Movie", `{"name":"The Matrix","abstract":"bullet time"}`, "public", "kate"), "kate", "ft2")
+	// alice's PRIVATE entity also contains the term; kate must not see it.
+	mustAppend(t, st, mkEntityProps("Movie", `{"name":"secret chestburster"}`, "private", "alice"), "alice", "ft3")
+
+	hits, err := st.FullTextSearch(ctx, readAF("kate"), store.TextQuery{Text: "chestburster", Limit: 10})
+	if err != nil {
+		t.Fatalf("FullTextSearch: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("got %d hits, want 1 (only the public match)", len(hits))
+	}
+	if extractName(hits[0].Entity.Props) != "Alien" {
+		t.Errorf("hit = %q, want Alien", extractName(hits[0].Entity.Props))
+	}
+	// A term only present in the query with no match returns nothing.
+	if none, _ := st.FullTextSearch(ctx, readAF("kate"), store.TextQuery{Text: "nonexistentword", Limit: 10}); len(none) != 0 {
+		t.Errorf("unmatched query returned %d hits, want 0", len(none))
+	}
+}
+
+func retractEdgeSupported(st store.Store) bool {
+	err := st.RetractEdge(ctx, "probe-no-edge", "probe", "probe-key")
+	return !errors.Is(err, store.ErrNotImplemented)
+}
+
+// testRetractEdge checks a retracted edge disappears from traversal.
+func testRetractEdge(t *testing.T, st store.Store) {
+	if !retractEdgeSupported(st) {
+		t.Skip("adapter has no edge retraction yet")
+	}
+	a := mustAppend(t, st, mkEntity("Movie", "A", "public", "kate"), "kate", "re-a")
+	b := mustAppend(t, st, mkEntity("Movie", "B", "public", "kate"), "kate", "re-b")
+	edge, err := st.AppendEdgeFact(ctx, store.AppendEdgeInput{
+		Edge:   domain.Edge{Predicate: "relatedTo", From: a.Entity.ID, To: b.Entity.ID, Visibility: "public", Owner: "kate"},
+		Writer: "kate", DedupeKey: "re-e", Actor: "kate",
+	})
+	if err != nil {
+		t.Fatalf("AppendEdgeFact: %v", err)
+	}
+	if sub, _ := st.Neighbors(ctx, readAF("kate"), store.NeighborQuery{Start: a.Entity.ID, MaxHops: 1}); !hasEntityNamed(sub, "B") {
+		t.Fatal("setup: B should be a neighbor of A")
+	}
+	if err := st.RetractEdge(ctx, edge.ID, "kate", ""); err != nil {
+		t.Fatalf("RetractEdge: %v", err)
+	}
+	if sub, _ := st.Neighbors(ctx, readAF("kate"), store.NeighborQuery{Start: a.Entity.ID, MaxHops: 1}); hasEntityNamed(sub, "B") {
+		t.Error("B should be unreachable after the edge is retracted")
 	}
 }

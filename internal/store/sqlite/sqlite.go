@@ -187,7 +187,7 @@ func (s *Store) RebuildProjection(ctx context.Context) error {
 
 	for _, stmt := range []string{
 		`DELETE FROM edges`, `DELETE FROM embeddings`, `DELETE FROM entity_labels`,
-		`DELETE FROM entity_external_ids`, `DELETE FROM entities`,
+		`DELETE FROM entity_external_ids`, `DELETE FROM entities_fts`, `DELETE FROM entities`,
 	} {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("rebuild clear: %w", err)

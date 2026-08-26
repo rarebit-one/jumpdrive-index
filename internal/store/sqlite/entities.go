@@ -240,7 +240,9 @@ func upsertEntitySnapshot(ctx context.Context, tx *sql.Tx, e domain.Entity, ts t
 			return fmt.Errorf("insert embedding: %w", err)
 		}
 	}
-	return nil
+	// Keep the full-text index in sync from the STORED props (reflects an attach's
+	// json_patch union), so search and the projection fold stay consistent.
+	return syncEntityFTS(ctx, tx, e.ID)
 }
 
 // appendEntityFact writes one entity.asserted fact whose payload is the snapshot
@@ -334,7 +336,8 @@ func mergeEntitiesTx(ctx context.Context, tx *sql.Tx, keep, drop domain.EntityID
 		{`UPDATE embeddings SET entity_id=? WHERE entity_id=?`, []any{string(keep), string(drop)}},
 		{`UPDATE edges SET from_id=? WHERE from_id=?`, []any{string(keep), string(drop)}},
 		{`UPDATE edges SET to_id=? WHERE to_id=?`, []any{string(keep), string(drop)}},
-		{`DELETE FROM entities WHERE id=?`, []any{string(drop)}}, // children already moved off drop
+		{`DELETE FROM entities WHERE id=?`, []any{string(drop)}},            // children already moved off drop
+		{`DELETE FROM entities_fts WHERE entity_id=?`, []any{string(drop)}}, // FTS is standalone, no FK cascade
 		{`UPDATE entities SET updated_at=? WHERE id=?`, []any{fmtTS(ts), string(keep)}},
 	}
 	for _, st := range stmts {
@@ -389,6 +392,9 @@ func (s *Store) RetractEntity(ctx context.Context, id domain.EntityID, actor dom
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM entities WHERE id=?`, string(id)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM entities_fts WHERE entity_id=?`, string(id)); err != nil {
 		return err
 	}
 	if err := s.insertFact(ctx, tx, domain.FactEntityRetracted, string(id), domain.WriterID(actor), dedupeKey, []byte(`{}`), actor, ts); err != nil {
