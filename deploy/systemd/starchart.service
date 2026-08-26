@@ -1,0 +1,94 @@
+[Unit]
+Description=Starchart — self-hosted jumpdrive-index knowledge graph
+Documentation=https://github.com/rarebit-one/jumpdrive-index
+After=network-online.target
+Wants=network-online.target
+# State (the SQLite db + embeddings) may live on a separate mount. If it does not,
+# this is harmless; if it does, it keeps the service from starting before it.
+RequiresMountsFor=/var/lib/starchart
+
+[Service]
+# Type=exec, not notify: the binary does not speak sd_notify, and claiming it does
+# would make systemd wait for a READY=1 that never comes and then call a healthy
+# service failed. It handles SIGINT/SIGTERM and nothing else — reload by
+# restarting (Go's default SIGHUP disposition is to terminate, so there is
+# deliberately no ExecReload).
+Type=exec
+# Migrations run as a separate phase before serving — never at boot inside the
+# server (racing writers, opaque health timeouts). ExecStartPre overrides JDX_MODE
+# for exactly this one exec; the service itself defaults to serve.
+ExecStartPre=/usr/bin/env JDX_MODE=migrate /usr/local/bin/jumpdrive-index
+ExecStart=/usr/local/bin/jumpdrive-index
+Restart=on-failure
+RestartSec=5s
+
+# Shutdown drains in-flight requests; bound it above the HTTP drain window.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+# Configuration is environment only (JDX_*). Keep it in one file, 0640 root:starchart.
+EnvironmentFile=/etc/starchart/starchart.env
+
+User=starchart
+Group=starchart
+# No SupplementaryGroups: Starchart owns every byte it touches — it reads no
+# external media library (the crucial difference from heyarr).
+
+# ---------------------------------------------------------------------------
+# Containment. Application-level auth (ADR-0011, the routable-unauthenticated
+# refusal) is the first layer; this is the second. Verified with
+# `systemd-analyze security starchart` — score recorded in the reference host doc.
+# ---------------------------------------------------------------------------
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+# HTTP over TCP and a unix socket. Nothing else.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No capabilities: it binds a high port and writes only under its data directory.
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @swap @reboot
+
+# ProtectSystem=strict makes the filesystem read-only, so every writable path is
+# named. Starchart has ONE writable tree — the SQLite db + embeddings live under
+# it — so the list is short by construction (no CAS-beside-a-library split).
+StateDirectory=starchart
+StateDirectoryMode=0700
+RuntimeDirectory=starchart
+RuntimeDirectoryMode=0700
+ReadWritePaths=/var/lib/starchart
+# If YouTube/media ingestion lands downloads on disk, add that download directory
+# here in a drop-in — it is a WRITABLE path, not a read-only library mount.
+UMask=0077
+
+# ---------------------------------------------------------------------------
+# Resource limits. Retune for the embedding / (optional, out-of-process) Whisper
+# workload — the real ceiling on a NAS-class box — via a drop-in.
+# ---------------------------------------------------------------------------
+MemoryMax=2G
+MemoryHigh=1536M
+IOWeight=50
+CPUWeight=50
+TasksMax=512
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
