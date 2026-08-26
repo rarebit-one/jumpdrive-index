@@ -1,7 +1,7 @@
 # jumpdrive-index — developer entrypoints. `make demo` is the milestone gate
 # (mirrors heyarr-core): it fails if a claimed mechanism was never exercised.
 
-.PHONY: build test fmt vet lint demo tidy
+.PHONY: build test fmt vet lint demo acceptance tidy
 
 build:
 	CGO_ENABLED=0 go build ./...
@@ -23,6 +23,12 @@ lint:
 tidy:
 	go mod tidy
 
-# demo == the acceptance gate. Grows into scripts/acceptance.sh as milestones land.
-demo: lint build test
-	@echo "OK: fmt+vet+build+test green"
+# acceptance: build+serve the binary and drive an end-to-end MCP-over-HTTP loop.
+acceptance:
+	@./scripts/acceptance.sh
+
+# demo == the milestone gate: static checks + the whole test suite + the live
+# serve loop. It fails if a claimed mechanism (the running service) was never
+# exercised.
+demo: lint build test acceptance
+	@echo "OK: fmt+vet+build+test+acceptance green"

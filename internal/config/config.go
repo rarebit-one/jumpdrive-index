@@ -51,6 +51,13 @@ type Config struct {
 	// DSN is the Postgres URL (Backend=postgres) or the SQLite path (Backend=sqlite).
 	DSN string
 
+	// PrincipalsFile is a JSON file describing the starchart access model
+	// (principals + restricted deny-types). Used when IdentityMode=starchart.
+	PrincipalsFile string
+	// JumpdriveURL is the base URL of the Jumpdrive authorizer, used when
+	// IdentityMode=jumpdrive.
+	JumpdriveURL string
+
 	// HTTPAddr is where the service listens. Loopback is the safe default.
 	HTTPAddr string
 	// AuthEnabled gates the bearer-token requirement. Per heyarr ADR-0011, serving
@@ -76,8 +83,10 @@ func Load(getenv func(string) string) (*Config, error) {
 
 	var errs []error
 	c := &Config{
-		DSN:      getenv("JDX_DSN"),
-		HTTPAddr: get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
+		DSN:            getenv("JDX_DSN"),
+		PrincipalsFile: getenv("JDX_PRINCIPALS_FILE"),
+		JumpdriveURL:   getenv("JDX_JUMPDRIVE_URL"),
+		HTTPAddr:       get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
 		Thresholds: domain.Thresholds{
 			AutoMerge: 0.94,
 			Review:    0.86,
@@ -122,6 +131,10 @@ func Load(getenv func(string) string) (*Config, error) {
 	// needs one too. SQLite defaults its path, so a blank DSN is allowed there.
 	if c.Backend == BackendPostgres && c.DSN == "" {
 		errs = append(errs, errors.New("JDX_DSN: required when JDX_BACKEND=postgres"))
+	}
+	// Identity-aware: the Jumpdrive delegate needs an authorizer URL to serve.
+	if c.Mode == ModeServe && c.IdentityMode == IdentityJumpdrive && c.JumpdriveURL == "" {
+		errs = append(errs, errors.New("JDX_JUMPDRIVE_URL: required when JDX_IDENTITY=jumpdrive"))
 	}
 
 	// ADR-0011: refuse to serve unauthenticated on a routable address.
