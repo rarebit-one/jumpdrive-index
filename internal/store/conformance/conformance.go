@@ -45,6 +45,7 @@ func RunStoreSuite(t *testing.T, open OpenFunc) {
 	t.Run("vector_resolve_two_band", func(t *testing.T) { testVectorResolve(t, open(t)) })
 	t.Run("semantic_search_ranks_and_filters", func(t *testing.T) { testSemanticSearch(t, open(t)) })
 	t.Run("neighbors_access_filtered_traversal", func(t *testing.T) { testNeighbors(t, open(t)) })
+	t.Run("governed_propose_approve_reject", func(t *testing.T) { testProposals(t, open(t)) })
 }
 
 var ctx = context.Background()
@@ -403,5 +404,83 @@ func testNeighbors(t *testing.T, st store.Store) {
 	// A start the caller cannot see is ErrNotFound, not an empty traversal.
 	if _, err := st.Neighbors(ctx, readAF("kate"), store.NeighborQuery{Start: h.Entity.ID, MaxHops: 1}); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("kate Neighbors of a hidden start: err=%v, want ErrNotFound", err)
+	}
+}
+
+// testProposals exercises the governed write path: a proposal is held (not
+// projected), listed, then either promoted (replayed through resolve) or
+// discarded (nothing written). A decided proposal cannot be decided again.
+func testProposals(t *testing.T, st store.Store) {
+	proposeMovie := func(tmdb, dedupe string) store.ProposalID {
+		t.Helper()
+		in := store.AppendEntityInput{
+			Candidate: domain.Entity{
+				Type: "Movie", Props: json.RawMessage(`{"name":"Proposed"}`),
+				Visibility: "public", Owner: "kate",
+				ExternalIDs: []domain.ExternalID{{Scheme: "tmdb", Value: tmdb}},
+			},
+			Writer: "kate", DedupeKey: dedupe, Actor: "kate", Policy: domain.ResolveAuto,
+		}
+		payload, err := json.Marshal(in)
+		if err != nil {
+			t.Fatalf("marshal input: %v", err)
+		}
+		id, err := st.Propose(ctx, store.Proposal{Kind: domain.FactEntityAsserted, Proposer: "kate", Space: "fam", Payload: payload})
+		if errors.Is(err, store.ErrNotImplemented) {
+			t.Skip("adapter has no governed writes yet")
+		}
+		if err != nil {
+			t.Fatalf("Propose: %v", err)
+		}
+		return id
+	}
+
+	key := func(v string) []string { return []string{(domain.ExternalID{Scheme: "tmdb", Value: v}).Key()} }
+
+	// --- approve path ---
+	id := proposeMovie("999", "p-approve")
+
+	pending, err := st.ListProposals(ctx, store.ProposalFilter{Space: "fam"})
+	if err != nil {
+		t.Fatalf("ListProposals: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != id {
+		t.Fatalf("pending = %v, want exactly the one proposal", pending)
+	}
+	// Held: nothing is projected yet.
+	if hits, _ := st.ResolveByExternalID(ctx, readAF("kate"), key("999")); len(hits) != 0 {
+		t.Errorf("a held proposal must not be projected; found %d entities", len(hits))
+	}
+
+	res, err := st.DecideProposal(ctx, id, true, "boss")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if res.Entity.ID == "" {
+		t.Error("approved proposal returned no entity")
+	}
+	if hits, _ := st.ResolveByExternalID(ctx, readAF("kate"), key("999")); len(hits) != 1 {
+		t.Errorf("after approval the entity should be projected; found %d", len(hits))
+	}
+	if pending, _ := st.ListProposals(ctx, store.ProposalFilter{Space: "fam"}); len(pending) != 0 {
+		t.Errorf("approved proposal should no longer be pending; %d remain", len(pending))
+	}
+	// A decided proposal cannot be decided again.
+	if _, err := st.DecideProposal(ctx, id, true, "boss"); !errors.Is(err, store.ErrConflict) {
+		t.Errorf("re-deciding: err=%v, want ErrConflict", err)
+	}
+
+	// --- reject path ---
+	rid := proposeMovie("888", "p-reject")
+	if _, err := st.DecideProposal(ctx, rid, false, "boss"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	if hits, _ := st.ResolveByExternalID(ctx, readAF("kate"), key("888")); len(hits) != 0 {
+		t.Errorf("a rejected proposal must write nothing; found %d entities", len(hits))
+	}
+
+	// Deciding a proposal that does not exist.
+	if _, err := st.DecideProposal(ctx, "no-such-proposal", true, "boss"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("deciding a missing proposal: err=%v, want ErrNotFound", err)
 	}
 }
