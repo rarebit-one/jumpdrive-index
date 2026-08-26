@@ -1,0 +1,18 @@
+{
+  "_comment": "Install as /etc/starchart/principals.json (0640 root:starchart). Each principal's Token is a bearer secret — generate a long random value and keep it secret. Spaces are the scopes the principal may write to; ApproverSpaces are the scopes they may approve proposals in. A Restricted principal (e.g. a child account) is denied the RestrictedDenyTypes below as a HARD boundary. Comment keys (underscore-prefixed) are ignored by the loader.",
+  "Principals": [
+    {
+      "Token": "CHANGE-ME-to-a-long-random-token",
+      "ID": "you",
+      "Spaces": ["home"],
+      "ApproverSpaces": ["home"]
+    },
+    {
+      "Token": "CHANGE-ME-a-different-long-random-token",
+      "ID": "kid",
+      "Spaces": ["home"],
+      "Restricted": true
+    }
+  ],
+  "RestrictedDenyTypes": []
+}
