@@ -246,12 +246,21 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
-// accessWhere compiles an access.Filter into a WHERE fragment + args for a
-// table with visibility/space/owner (and, for entities, type) columns. This is
-// the hard ACL as SQL SHAPE — a forbidden row is never returned. NOTE: the
-// Restricted type-deny clause assumes a `type` column (entities); edge access
-// filtering (Neighbors) is a later milestone.
+// accessWhere compiles an access.Filter into a WHERE fragment + args for an
+// ENTITY table alias (visibility/space/owner + the restricted @type gate). This
+// is the hard ACL as SQL SHAPE — a forbidden row is never returned.
 func accessWhere(af access.Filter, alias string) (string, []any) {
+	return accessClause(af, alias, true)
+}
+
+// accessWhereEdge is the same clause for an EDGE alias: edges carry their own
+// visibility/space/owner but have no @type column, so the restricted type gate
+// is omitted. Edge visibility is thus enforced independently of its endpoints.
+func accessWhereEdge(af access.Filter, alias string) (string, []any) {
+	return accessClause(af, alias, false)
+}
+
+func accessClause(af access.Filter, alias string, gateTypes bool) (string, []any) {
 	var ors []string
 	var args []any
 	if af.AllowPublic {
@@ -268,7 +277,7 @@ func accessWhere(af access.Filter, alias string) (string, []any) {
 	args = append(args, string(af.Principal))
 
 	where := "(" + strings.Join(ors, " OR ") + ")"
-	if af.Restricted && len(af.DenyTypes) > 0 {
+	if gateTypes && af.Restricted && len(af.DenyTypes) > 0 {
 		where += fmt.Sprintf(" AND %s.type NOT IN (%s)", alias, placeholders(len(af.DenyTypes)))
 		for _, t := range af.DenyTypes {
 			args = append(args, string(t))

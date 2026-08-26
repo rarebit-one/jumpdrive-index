@@ -44,6 +44,7 @@ func RunStoreSuite(t *testing.T, open OpenFunc) {
 	t.Run("rebuild_reproduces_projection", func(t *testing.T) { testRebuild(t, open(t)) })
 	t.Run("vector_resolve_two_band", func(t *testing.T) { testVectorResolve(t, open(t)) })
 	t.Run("semantic_search_ranks_and_filters", func(t *testing.T) { testSemanticSearch(t, open(t)) })
+	t.Run("neighbors_access_filtered_traversal", func(t *testing.T) { testNeighbors(t, open(t)) })
 }
 
 var ctx = context.Background()
@@ -84,6 +85,29 @@ func vectorsSupported(st store.Store) bool {
 	_, err := st.SemanticSearch(ctx, readAF("probe"),
 		store.VectorQuery{Model: "probe@2", Vector: []float32{1, 0}, Limit: 1})
 	return !errors.Is(err, store.ErrNotImplemented)
+}
+
+func mustEdge(t *testing.T, st store.Store, pred string, from, to domain.EntityID, vis, owner, writer, dedupe string) {
+	t.Helper()
+	_, err := st.AppendEdgeFact(ctx, store.AppendEdgeInput{
+		Edge: domain.Edge{
+			Predicate: domain.Predicate(pred), From: from, To: to,
+			Visibility: domain.Visibility(vis), Owner: domain.PrincipalID(owner),
+		},
+		Writer: domain.WriterID(writer), DedupeKey: dedupe, Actor: domain.PrincipalID(writer),
+	})
+	if err != nil {
+		t.Fatalf("AppendEdgeFact(%s): %v", dedupe, err)
+	}
+}
+
+func hasEntityNamed(sub store.Subgraph, name string) bool {
+	for _, e := range sub.Entities {
+		if extractName(e.Props) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func mustAppend(t *testing.T, st store.Store, e domain.Entity, writer, dedupe string) store.ResolveResult {
@@ -314,5 +338,70 @@ func testSemanticSearch(t *testing.T, st store.Store) {
 		if h.Score < 0 || h.Score > 1.0001 {
 			t.Errorf("cosine score out of range: %v", h.Score)
 		}
+	}
+}
+
+// testNeighbors is THE edge-visibility safety test. One graph, two viewers:
+//
+//	A —e1(pub)— B —e2(pub)— C          (a plain visible chain)
+//	A —e3(pub)— H(alice-private) —e4(pub)— D   (a public edge to a HIDDEN node)
+//	A —e5(alice-private)— E(pub)        (a PRIVATE edge between two public nodes)
+//
+// kate (sees public + her own) must reach only A,B,C: the hidden node H may not
+// bridge to D, and the private edge e5 may not be traversed to E even though E is
+// public. alice (owns H and e5) sees the whole graph. This proves access is
+// filtered per hop on edges AND nodes independently.
+func testNeighbors(t *testing.T, st store.Store) {
+	if _, err := st.Neighbors(ctx, readAF("probe"), store.NeighborQuery{Start: "none"}); errors.Is(err, store.ErrNotImplemented) {
+		t.Skip("adapter has no traversal yet")
+	}
+
+	a := mustAppend(t, st, mkEntity("Movie", "A", "public", "kate"), "kate", "na")
+	b := mustAppend(t, st, mkEntity("Movie", "B", "public", "kate"), "kate", "nb")
+	c := mustAppend(t, st, mkEntity("Movie", "C", "public", "kate"), "kate", "nc")
+	h := mustAppend(t, st, mkEntity("Note", "H", "private", "alice"), "alice", "nh")
+	d := mustAppend(t, st, mkEntity("Movie", "D", "public", "kate"), "kate", "nd")
+	e := mustAppend(t, st, mkEntity("Movie", "E", "public", "kate"), "kate", "ne")
+
+	mustEdge(t, st, "relatedTo", a.Entity.ID, b.Entity.ID, "public", "kate", "kate", "e1")
+	mustEdge(t, st, "relatedTo", b.Entity.ID, c.Entity.ID, "public", "kate", "kate", "e2")
+	mustEdge(t, st, "relatedTo", a.Entity.ID, h.Entity.ID, "public", "kate", "kate", "e3")
+	mustEdge(t, st, "relatedTo", h.Entity.ID, d.Entity.ID, "public", "kate", "kate", "e4")
+	mustEdge(t, st, "relatedTo", a.Entity.ID, e.Entity.ID, "private", "alice", "alice", "e5")
+
+	// kate: the restricted view.
+	ksub, err := st.Neighbors(ctx, readAF("kate"), store.NeighborQuery{Start: a.Entity.ID, MaxHops: 2})
+	if err != nil {
+		t.Fatalf("kate Neighbors: %v", err)
+	}
+	for _, want := range []string{"A", "B", "C"} {
+		if !hasEntityNamed(ksub, want) {
+			t.Errorf("kate should reach %s", want)
+		}
+	}
+	if hasEntityNamed(ksub, "H") {
+		t.Error("LEAK: kate saw alice's private node H")
+	}
+	if hasEntityNamed(ksub, "D") {
+		t.Error("LEAK: hidden node H bridged kate to D")
+	}
+	if hasEntityNamed(ksub, "E") {
+		t.Error("LEAK: kate traversed a private edge to reach E")
+	}
+
+	// alice: owns H and e5, so she sees the whole graph.
+	asub, err := st.Neighbors(ctx, readAF("alice"), store.NeighborQuery{Start: a.Entity.ID, MaxHops: 2})
+	if err != nil {
+		t.Fatalf("alice Neighbors: %v", err)
+	}
+	for _, want := range []string{"A", "B", "C", "H", "D", "E"} {
+		if !hasEntityNamed(asub, want) {
+			t.Errorf("alice should reach %s", want)
+		}
+	}
+
+	// A start the caller cannot see is ErrNotFound, not an empty traversal.
+	if _, err := st.Neighbors(ctx, readAF("kate"), store.NeighborQuery{Start: h.Entity.ID, MaxHops: 1}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("kate Neighbors of a hidden start: err=%v, want ErrNotFound", err)
 	}
 }
