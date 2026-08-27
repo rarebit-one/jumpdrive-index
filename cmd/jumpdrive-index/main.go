@@ -22,6 +22,7 @@ import (
 	"github.com/rarebit-one/jumpdrive-index/internal/embed"
 	"github.com/rarebit-one/jumpdrive-index/internal/httpapi"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
+	"github.com/rarebit-one/jumpdrive-index/internal/secret"
 	"github.com/rarebit-one/jumpdrive-index/internal/service"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
 	"github.com/rarebit-one/jumpdrive-index/internal/store/postgres"
@@ -137,14 +138,20 @@ func buildAccessModel(cfg *config.Config) (access.Model, error) {
 }
 
 // buildEmbedder wires the optional embedding provider from env. "none" (the
-// default) disables the semantic path; "ollama" needs JDX_EMBED_URL + JDX_EMBED_MODEL.
+// default) disables the semantic path; "ollama" needs JDX_EMBED_URL +
+// JDX_EMBED_MODEL; "fabric" is the TechnoCore switchboard (Farcaster) — an
+// OpenAI-compatible /v1/embeddings endpoint — and additionally accepts an
+// optional JDX_EMBED_TOKEN bearer, keeping the model off-host so the binary stays
+// static / CGO-off.
 func buildEmbedder() (embed.Embedder, error) {
 	switch p := os.Getenv("JDX_EMBED_PROVIDER"); p {
 	case "", "none":
 		return nil, nil
 	case "ollama":
 		return embed.NewOllama(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"))
+	case "fabric":
+		return embed.NewFabric(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"), secret.Value(os.Getenv("JDX_EMBED_TOKEN")))
 	default:
-		return nil, fmt.Errorf("unknown embed provider %q (want none|ollama)", p)
+		return nil, fmt.Errorf("unknown embed provider %q (want none|ollama|fabric)", p)
 	}
 }
