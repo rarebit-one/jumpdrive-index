@@ -16,9 +16,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
+	"github.com/rarebit-one/jumpdrive-index/internal/embed"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
 )
 
@@ -28,15 +31,18 @@ var (
 	ErrForbidden       = errors.New("service: forbidden")
 )
 
-// Service wires an access model to a store.
+// Service wires an access model to a store, with an optional embedder for
+// semantic search + auto-embedding on write.
 type Service struct {
-	store  store.Store
-	access access.Model
+	store    store.Store
+	access   access.Model
+	embedder embed.Embedder // optional; nil disables the semantic path
 }
 
-// New builds a Service.
-func New(st store.Store, am access.Model) *Service {
-	return &Service{store: st, access: am}
+// New builds a Service. embedder may be nil (semantic search is then skipped and
+// entities are stored without auto-embeddings).
+func New(st store.Store, am access.Model, em embed.Embedder) *Service {
+	return &Service{store: st, access: am, embedder: em}
 }
 
 // auth authenticates a bearer and returns the decision plus the derived read
@@ -85,14 +91,67 @@ type SearchQuery struct {
 	Limit int
 }
 
-// Search runs an access-filtered full-text search, ranked by relevance.
-// (Semantic/hybrid search arrives with the embedder.)
+// Search runs an access-filtered search. Full-text always runs; when an embedder
+// is configured it also embeds the query and runs semantic search, fusing the two
+// by reciprocal-rank fusion. It degrades to full-text alone if the embedder or
+// the store's semantic/full-text capability is unavailable.
 func (s *Service) Search(ctx context.Context, bearer string, q SearchQuery) ([]store.ScoredEntity, error) {
 	_, af, err := s.auth(bearer)
 	if err != nil {
 		return nil, err
 	}
-	return s.store.FullTextSearch(ctx, af, store.TextQuery{Text: q.Text, Type: q.Type, Limit: q.Limit})
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	ft, err := s.store.FullTextSearch(ctx, af, store.TextQuery{Text: q.Text, Type: q.Type, Limit: limit})
+	if err != nil && !errors.Is(err, store.ErrNotImplemented) {
+		return nil, err
+	}
+	if s.embedder == nil || strings.TrimSpace(q.Text) == "" {
+		return ft, nil
+	}
+
+	vecs, eerr := s.embedder.Embed(ctx, []string{q.Text})
+	if eerr != nil || len(vecs) == 0 {
+		return ft, nil // degrade to full-text on an embed failure
+	}
+	sem, serr := s.store.SemanticSearch(ctx, af, store.VectorQuery{
+		Vector: vecs[0], Model: s.embedder.Model(), Type: q.Type, Limit: limit,
+	})
+	if serr != nil && !errors.Is(serr, store.ErrNotImplemented) {
+		return nil, serr
+	}
+	return fuseRRF(limit, ft, sem), nil
+}
+
+// fuseRRF merges scored lists by reciprocal-rank fusion (k=60), the standard way
+// to combine full-text and semantic rankings without calibrating their scores.
+func fuseRRF(limit int, lists ...[]store.ScoredEntity) []store.ScoredEntity {
+	const k = 60.0
+	score := map[domain.EntityID]float64{}
+	ent := map[domain.EntityID]domain.Entity{}
+	for _, list := range lists {
+		for rank, se := range list {
+			score[se.Entity.ID] += 1.0 / (k + float64(rank))
+			ent[se.Entity.ID] = se.Entity
+		}
+	}
+	out := make([]store.ScoredEntity, 0, len(score))
+	for id, sc := range score {
+		out = append(out, store.ScoredEntity{Entity: ent[id], Score: sc})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].Entity.ID < out[j].Entity.ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 // ---- writes (authorized) ----
@@ -119,7 +178,7 @@ func (s *Service) CreateEntity(ctx context.Context, bearer string, in CreateEnti
 	if !s.access.CanWrite(d, in.Space) {
 		return store.ResolveResult{}, fmt.Errorf("%w: no write access to space %q", ErrForbidden, in.Space)
 	}
-	return s.store.AppendEntityFact(ctx, s.entityInput(d, in))
+	return s.store.AppendEntityFact(ctx, s.entityInput(d, s.autoEmbed(ctx, in)))
 }
 
 // LinkInput is the surface-facing shape for asserting an edge.
@@ -153,7 +212,7 @@ func (s *Service) ProposeEntity(ctx context.Context, bearer string, in CreateEnt
 	if err != nil {
 		return "", err
 	}
-	payload, err := json.Marshal(s.entityInput(d, in))
+	payload, err := json.Marshal(s.entityInput(d, s.autoEmbed(ctx, in)))
 	if err != nil {
 		return "", err
 	}
@@ -251,4 +310,38 @@ func (s *Service) proposalSpace(ctx context.Context, id store.ProposalID) (domai
 		}
 	}
 	return "", store.ErrNotFound
+}
+
+// autoEmbed computes an embedding for an entity's text when an embedder is
+// configured and the caller supplied none, so a create both dedups by vector and
+// becomes findable by semantic search. Any embed failure degrades silently — the
+// entity is still created, just without a vector.
+func (s *Service) autoEmbed(ctx context.Context, in CreateEntityInput) CreateEntityInput {
+	if s.embedder == nil || len(in.Embeddings) > 0 {
+		return in
+	}
+	text := searchText(in.Type, in.Props)
+	if strings.TrimSpace(text) == "" {
+		return in
+	}
+	vecs, err := s.embedder.Embed(ctx, []string{text})
+	if err != nil || len(vecs) == 0 {
+		return in
+	}
+	in.Embeddings = []domain.Embedding{{Model: s.embedder.Model(), Field: "text", Vector: vecs[0]}}
+	return in
+}
+
+// searchText joins the @type and every top-level string property value.
+func searchText(typ domain.Type, props json.RawMessage) string {
+	parts := []string{string(typ)}
+	var m map[string]any
+	if json.Unmarshal(props, &m) == nil {
+		for _, v := range m {
+			if str, ok := v.(string); ok && str != "" {
+				parts = append(parts, str)
+			}
+		}
+	}
+	return strings.Join(parts, " ")
 }

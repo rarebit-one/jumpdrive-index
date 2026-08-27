@@ -8,6 +8,7 @@ import (
 
 	"github.com/rarebit-one/jumpdrive-index/internal/access/starchart"
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
+	"github.com/rarebit-one/jumpdrive-index/internal/embed"
 	"github.com/rarebit-one/jumpdrive-index/internal/service"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
 	"github.com/rarebit-one/jumpdrive-index/internal/store/sqlite"
@@ -37,13 +38,85 @@ func newService(t *testing.T) *service.Service {
 	if err != nil {
 		t.Fatalf("starchart.New: %v", err)
 	}
-	return service.New(st, am)
+	return service.New(st, am, nil)
 }
 
 func movie(name string, ext ...domain.ExternalID) service.CreateEntityInput {
 	return service.CreateEntityInput{
 		Type: "Movie", Props: []byte(`{"name":"` + name + `"}`),
 		Space: "fam", Visibility: "space", ExternalIDs: ext, Policy: domain.ResolveAuto,
+	}
+}
+
+// scriptedEmbedder returns a fixed vector per input text (default orthogonal), so
+// wiring tests are deterministic without a real model.
+type scriptedEmbedder struct{ vecs map[string][]float32 }
+
+func (e scriptedEmbedder) Model() string { return "test@2" }
+func (e scriptedEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, t := range texts {
+		if v, ok := e.vecs[t]; ok {
+			out[i] = v
+		} else {
+			out[i] = []float32{0, 1}
+		}
+	}
+	return out, nil
+}
+
+func newServiceWithEmbedder(t *testing.T, em embed.Embedder) *service.Service {
+	t.Helper()
+	st, err := sqlite.Open(sqlite.Options{
+		Path:       filepath.Join(t.TempDir(), "svc.db"),
+		Thresholds: domain.Thresholds{AutoMerge: 0.94, Review: 0.86},
+	})
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	am, _ := starchart.New(starchart.Config{Principals: []starchart.PrincipalConfig{
+		{Token: "kate-tok", ID: "kate", Spaces: []domain.SpaceID{"fam"}, ApproverSpaces: []domain.SpaceID{"fam"}},
+	}})
+	return service.New(st, am, em)
+}
+
+func TestSemanticSearchAndAutoEmbed(t *testing.T) {
+	em := scriptedEmbedder{vecs: map[string][]float32{
+		"Movie Alien":      {1, 0},
+		"Movie The Matrix": {0, 1},
+		"spaceship horror": {0.99, 0.14}, // the query — near Alien's vector, unrelated by text
+	}}
+	s := newServiceWithEmbedder(t, em)
+
+	ra, err := s.CreateEntity(ctx, "kate-tok", service.CreateEntityInput{
+		Type: "Movie", Props: []byte(`{"name":"Alien"}`), Space: "fam", Visibility: "space", Policy: domain.ResolveAuto,
+	})
+	if err != nil {
+		t.Fatalf("create Alien: %v", err)
+	}
+	if _, err := s.CreateEntity(ctx, "kate-tok", service.CreateEntityInput{
+		Type: "Movie", Props: []byte(`{"name":"The Matrix"}`), Space: "fam", Visibility: "space", Policy: domain.ResolveAuto,
+	}); err != nil {
+		t.Fatalf("create Matrix: %v", err)
+	}
+
+	// Auto-embed attached a vector on create.
+	if got, _ := s.GetEntity(ctx, "kate-tok", ra.Entity.ID); len(got.Embeddings) == 0 {
+		t.Error("auto-embed did not attach an embedding on create")
+	}
+
+	// A query with NO term in common with Alien still surfaces it via the vector
+	// path (its query vector is near Alien's), ranked top after fusion.
+	hits, err := s.Search(ctx, "kate-tok", service.SearchQuery{Text: "spaceship horror", Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) == 0 || hits[0].Entity.ID != ra.Entity.ID {
+		t.Errorf("top hit = %v, want Alien via semantic", hits)
 	}
 }
 
