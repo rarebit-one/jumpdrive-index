@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
@@ -40,6 +41,10 @@ const (
 	SchemeYouTubeVideo = "youtube"
 	// SchemeYouTubeChannel anchors an Organization to its YouTube channel id.
 	SchemeYouTubeChannel = "youtube-channel"
+	// SchemeYouTubeClip anchors a Clip to its parent video id plus its
+	// start/end offsets, so a re-ingest dedups onto the same timecoded span
+	// rather than minting a duplicate Clip.
+	SchemeYouTubeClip = "youtube-clip"
 )
 
 // ingestWriter is the fixed writer id stamped on ingested facts, so a re-ingest
@@ -59,6 +64,21 @@ type Metadata struct {
 	ChannelName string
 	ChannelURL  string
 	Transcript  string
+	// Segments are the transcript's timecoded spans (rung 2). Each becomes a
+	// Clip of the VideoObject. Empty (the capability yields no timecodes) means
+	// no Clips — rung-1 behaviour is unchanged.
+	Segments []Segment
+}
+
+// Segment is one timecoded span of a video's transcript: the text spoken
+// between StartOffset and EndOffset (schema.org offsets, in seconds). SubjectTMDB
+// carries the tmdb ids the span is ABOUT, which become timecoded about edges on
+// the span's Clip (rung 2) — "at 3:12–4:05 this video is about Alien".
+type Segment struct {
+	StartOffset float64
+	EndOffset   float64
+	Text        string
+	SubjectTMDB []string
 }
 
 // Capability fetches a video's metadata and best-effort transcript OUT OF
@@ -88,10 +108,12 @@ type Request struct {
 // Result reports what the ingestion created or attached, so a caller (or a demo)
 // can verify the loop closed.
 type Result struct {
-	Video       domain.EntityID
-	Channel     domain.EntityID
-	AboutWorks  []domain.EntityID // one per reconciled heyarr work
-	Transcribed bool              // true when a non-empty transcript was stored
+	Video          domain.EntityID
+	Channel        domain.EntityID
+	AboutWorks     []domain.EntityID // one per video-level reconciled heyarr work (rung 1)
+	Clips          []domain.EntityID // one per timecoded transcript segment (rung 2)
+	ClipAboutWorks []domain.EntityID // one per Clip-level (timecoded) about edge (rung 2)
+	Transcribed    bool              // true when a non-empty transcript was stored
 }
 
 // caller is the minimal slice of a heyarr MCP client ingest needs for
@@ -173,24 +195,15 @@ func (i *Ingestor) Ingest(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 
-	// --- 4b: reconcile each subject tmdb id to a heyarr work, add about edge ---
+	// --- 4b (rung 1): reconcile each subject tmdb id to a heyarr work, add a
+	// video-level about edge ---
 	for _, tmdb := range req.SubjectTMDB {
-		if i.reconcil == nil {
-			break
-		}
-		workID, ok, rerr := i.resolveHeyarrWork(ctx, tmdb)
-		if rerr != nil || !ok {
-			continue // ADR-0025: a heyarr miss/error degrades to "no about edge"
-		}
-		ref, err := i.upsert(ctx, req, "CreativeWork",
-			map[string]any{"name": "heyarr work " + workID},
-			heyarr.WorkExternalID(workID), "ingest:heyarr")
+		ref, ok, err := i.aboutWork(ctx, req, tmdb)
 		if err != nil {
-			return Result{}, fmt.Errorf("heyarr work ref: %w", err)
+			return Result{}, err
 		}
-		// Also anchor the tmdb id so a future tmdb-based assertion dedups onto it.
-		if err := i.attachTMDB(ctx, req, ref, tmdb); err != nil {
-			return Result{}, fmt.Errorf("tmdb anchor: %w", err)
+		if !ok {
+			continue // ADR-0025: a heyarr miss/error degrades to "no about edge"
 		}
 		if err := i.link(ctx, req, "about", video, ref,
 			fmt.Sprintf("ingest|about|%s|%s", video, ref)); err != nil {
@@ -199,7 +212,89 @@ func (i *Ingestor) Ingest(ctx context.Context, req Request) (Result, error) {
 		res.AboutWorks = append(res.AboutWorks, ref)
 	}
 
+	// --- rung 2: a Clip per timecoded transcript segment, isPartOf the video,
+	// with a TIMECODED about edge when the segment's subject reconciles. Purely
+	// additive: no segments → no Clips, leaving rung-1 behaviour untouched. ---
+	for _, seg := range md.Segments {
+		clip, err := i.upsertClip(ctx, req, md.VideoID, seg)
+		if err != nil {
+			return Result{}, fmt.Errorf("clip node: %w", err)
+		}
+		res.Clips = append(res.Clips, clip)
+		// Clip --isPartOf--> VideoObject (schema.org: a part of the whole video).
+		if err := i.link(ctx, req, "isPartOf", clip, video,
+			fmt.Sprintf("ingest|isPartOf|%s|%s", clip, video)); err != nil {
+			return Result{}, fmt.Errorf("clip isPartOf edge: %w", err)
+		}
+		// The rung-2 payoff: attach the about edge to the Clip, so the link is
+		// timecoded to the span rather than the whole video.
+		for _, tmdb := range seg.SubjectTMDB {
+			ref, ok, err := i.aboutWork(ctx, req, tmdb)
+			if err != nil {
+				return Result{}, err
+			}
+			if !ok {
+				continue
+			}
+			if err := i.link(ctx, req, "about", clip, ref,
+				fmt.Sprintf("ingest|about|%s|%s", clip, ref)); err != nil {
+				return Result{}, fmt.Errorf("clip about edge: %w", err)
+			}
+			res.ClipAboutWorks = append(res.ClipAboutWorks, ref)
+		}
+	}
+
 	return res, nil
+}
+
+// aboutWork reconciles a tmdb id to a heyarr work and materialises the local
+// reference node an about edge will point at: resolve the work id, upsert a
+// CreativeWork carrying the heyarr-work anchor, and attach the tmdb join key so a
+// future tmdb-based assertion dedups onto it. ok is false with no error when
+// heyarr knows no work for the id (or errors), so every caller degrades to "no
+// about edge" (ADR-0025). A repeat tmdb dedups onto the same reference, so a
+// video-level and a Clip-level about edge share one work node.
+func (i *Ingestor) aboutWork(ctx context.Context, req Request, tmdb string) (domain.EntityID, bool, error) {
+	if i.reconcil == nil {
+		return "", false, nil
+	}
+	workID, ok, rerr := i.resolveHeyarrWork(ctx, tmdb)
+	if rerr != nil || !ok {
+		return "", false, nil
+	}
+	ref, err := i.upsert(ctx, req, "CreativeWork",
+		map[string]any{"name": "heyarr work " + workID},
+		heyarr.WorkExternalID(workID), "ingest:heyarr")
+	if err != nil {
+		return "", false, fmt.Errorf("heyarr work ref: %w", err)
+	}
+	if err := i.attachTMDB(ctx, req, ref, tmdb); err != nil {
+		return "", false, fmt.Errorf("tmdb anchor: %w", err)
+	}
+	return ref, true, nil
+}
+
+// upsertClip asserts a Clip entity for one timecoded transcript segment — a span
+// of the parent video carrying schema.org startOffset/endOffset (seconds) and the
+// segment text — anchored by a youtube-clip external id so a re-ingest dedups onto
+// the same span rather than duplicating it.
+func (i *Ingestor) upsertClip(ctx context.Context, req Request, videoID string, seg Segment) (domain.EntityID, error) {
+	props := map[string]any{
+		"startOffset": seg.StartOffset,
+		"endOffset":   seg.EndOffset,
+	}
+	putIf(props, "text", seg.Text)
+	ext := domain.ExternalID{Scheme: SchemeYouTubeClip, Value: clipKey(videoID, seg)}
+	return i.upsert(ctx, req, "Clip", props, ext, "ingest:yt-dlp")
+}
+
+// clipKey is the stable dedup value for a Clip: its parent video id plus the
+// span's offsets, so the same segment re-ingests idempotently.
+func clipKey(videoID string, seg Segment) string {
+	return fmt.Sprintf("%s@%s-%s",
+		videoID,
+		strconv.FormatFloat(seg.StartOffset, 'f', -1, 64),
+		strconv.FormatFloat(seg.EndOffset, 'f', -1, 64))
 }
 
 // upsert asserts an entity through resolve-before-create and returns its id,
