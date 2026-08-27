@@ -1,0 +1,7 @@
+{
+  "name": "get_external_ids",
+  "arguments": {
+    "source": "tmdb",
+    "value": "603"
+  }
+}
