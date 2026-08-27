@@ -151,11 +151,20 @@ func (s *Server) callTool(ctx context.Context, bearer string, req rpcRequest) []
 
 func toolResult(v any) map[string]any {
 	text, _ := json.Marshal(v)
-	return map[string]any{
-		"content":           []map[string]any{{"type": "text", "text": string(text)}},
-		"structuredContent": v,
-		"isError":           false,
+	out := map[string]any{
+		"content": []map[string]any{{"type": "text", "text": string(text)}},
+		"isError": false,
 	}
+	// structuredContent MUST be a JSON object per the MCP spec. A tool that
+	// returns a top-level array (e.g. search, resolve_external, get_neighbors)
+	// would otherwise make a spec-compliant MCP client reject the whole result
+	// ("expected record, received array") — which silently starves an agent of
+	// tool output. Emit it only when the value marshals to an object; an array or
+	// scalar still rides in the text content above, so no data is lost.
+	if len(text) > 0 && text[0] == '{' {
+		out["structuredContent"] = v
+	}
+	return out
 }
 
 func toolError(msg string) map[string]any {
