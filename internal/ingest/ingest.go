@@ -261,24 +261,31 @@ func (i *Ingestor) link(ctx context.Context, req Request, pred domain.Predicate,
 
 // resolveHeyarrWork asks heyarr which work carries a tmdb id.
 //
-// STUB pending heyarr ADR-0050 (heyarr PR #349): it calls a PROPOSED
-// get_external_ids reverse-lookup tool ({source,value} → {entity_type,entity_id})
-// that heyarr does not yet expose. The shape here encodes the ADR-0050 proposal
-// and MUST be re-pinned against heyarr's real tool (and a contract-drift gate)
-// when #349 lands.
+// Pinned to heyarr's shipped get_external_ids MCP tool (ADR-0050, heyarr PR
+// #355): the reverse lookup {source,value} returns
+// {external_ids:[{source,value,entity_type,entity_id}]} — an empty list on no
+// match, never an error. We take the first row whose entity_type is "work". A
+// full contract-drift gate over heyarr's vendored MCP contract is still a
+// follow-up; this decode matches the tool heyarr now exposes.
 func (i *Ingestor) resolveHeyarrWork(ctx context.Context, tmdb string) (string, bool, error) {
 	var out struct {
-		EntityType string `json:"entity_type"`
-		EntityID   string `json:"entity_id"`
+		ExternalIDs []struct {
+			Source     string `json:"source"`
+			Value      string `json:"value"`
+			EntityType string `json:"entity_type"`
+			EntityID   string `json:"entity_id"`
+		} `json:"external_ids"`
 	}
 	if err := i.reconcil.Call(ctx, "get_external_ids",
 		map[string]string{"source": "tmdb", "value": tmdb}, &out); err != nil {
 		return "", false, err
 	}
-	if out.EntityID == "" || out.EntityType != "work" {
-		return "", false, nil
+	for _, x := range out.ExternalIDs {
+		if x.EntityType == "work" && x.EntityID != "" {
+			return x.EntityID, true, nil
+		}
 	}
-	return out.EntityID, true, nil
+	return "", false, nil
 }
 
 // visOrDefault resolves the request visibility, defaulting to private.
