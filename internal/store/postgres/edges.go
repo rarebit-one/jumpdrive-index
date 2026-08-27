@@ -95,6 +95,27 @@ func upsertEdgeSnapshot(ctx context.Context, tx pgx.Tx, ed domain.Edge, ts time.
 	return nil
 }
 
+// RetractEdge tombstones an edge: removes it from the projection and appends an
+// edge.retracted fact (the fact log retains it).
+func (s *Store) RetractEdge(ctx context.Context, id domain.EdgeID, actor domain.PrincipalID, dedupeKey string) error {
+	if dedupeKey == "" {
+		dedupeKey = fmt.Sprintf("%s|retract", id)
+	}
+	ts := s.now()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `DELETE FROM edges WHERE id=$1`, string(id)); err != nil {
+		return err
+	}
+	if err := s.insertFact(ctx, tx, domain.FactEdgeRetracted, string(id), domain.WriterID(actor), dedupeKey, []byte(`{}`), actor, ts); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func getEdgeByID(ctx context.Context, q querier, id domain.EdgeID) (domain.Edge, error) {
 	ed, err := scanEdgeRow(q.QueryRow(ctx, `SELECT `+edgeCols+` FROM edges WHERE id=$1`, string(id)))
 	if errors.Is(err, pgx.ErrNoRows) {

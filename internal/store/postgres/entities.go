@@ -89,9 +89,19 @@ func (s *Store) AppendEntityFact(ctx context.Context, in store.AppendEntityInput
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
-	// Vector neighbours are a later milestone (SemanticSearch); resolve falls back
-	// to insert-new when there is no external match.
-	decision, err := domain.Resolve(cand, domain.ResolveInputs{ExternalIDHits: extHits}, policy, s.th)
+	// Vector neighbours only when an external id did not already resolve it (they
+	// are authoritative) and the candidate carries an embedding. The KNN is
+	// unfiltered — dedup must consider all same-type candidates, like the
+	// external-id lookup above.
+	var neighbors []domain.ScoredMatch
+	if policy == domain.ResolveAuto && len(extHits) == 0 && len(cand.Embeddings) > 0 {
+		emb := cand.Embeddings[0]
+		neighbors, err = s.knnByModel(ctx, tx, emb.Model, cand.Type, nil, emb.Vector, 5)
+		if err != nil {
+			return store.ResolveResult{}, err
+		}
+	}
+	decision, err := domain.Resolve(cand, domain.ResolveInputs{ExternalIDHits: extHits, VectorNeighbors: neighbors}, policy, s.th)
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
@@ -99,8 +109,6 @@ func (s *Store) AppendEntityFact(ctx context.Context, in store.AppendEntityInput
 	var result store.ResolveResult
 	switch decision.Action {
 	case domain.ActionInsertNew, domain.ActionInsertFlagged:
-		// InsertFlagged's sameAs? edge needs the (stubbed) vector stage; without
-		// neighbours resolve cannot return it, so this behaves as InsertNew.
 		cand.ID = domain.EntityID(s.newID())
 		if err := upsertEntitySnapshot(ctx, tx, cand, ts); err != nil {
 			return store.ResolveResult{}, err
@@ -108,7 +116,37 @@ func (s *Store) AppendEntityFact(ctx context.Context, in store.AppendEntityInput
 		if err := s.appendEntityFact(ctx, tx, cand, in.Writer, dedupeKey, in.Actor, ts); err != nil {
 			return store.ResolveResult{}, err
 		}
-		result = store.ResolveResult{Action: domain.ActionInsertNew, MatchKind: domain.MatchNone}
+		// A review-band vector hit: create the node, but record an INFERRED sameAs?
+		// edge to the near-duplicate so a human/agent can later confirm or reject the
+		// identity. We never auto-merge in this band (a false merge is dear to undo);
+		// the flag is a soft signal, not a decision.
+		if decision.Action == domain.ActionInsertFlagged && decision.FlagTo != "" {
+			edge := domain.Edge{
+				ID:         domain.EdgeID(s.newID()),
+				Predicate:  "sameAs?",
+				From:       cand.ID,
+				To:         decision.FlagTo,
+				Space:      cand.Space,
+				Owner:      cand.Owner,
+				Visibility: cand.Visibility,
+				Provenance: domain.Provenance{
+					Asserter: string(in.Writer), Method: domain.Inferred,
+					Source: "resolve:vector-review", Confidence: decision.FlagScore, AssertedAt: ts,
+				},
+			}
+			if err := upsertEdgeSnapshot(ctx, tx, edge, ts); err != nil {
+				return store.ResolveResult{}, err
+			}
+			payload, err := json.Marshal(edge)
+			if err != nil {
+				return store.ResolveResult{}, err
+			}
+			ek := fmt.Sprintf("%s|sameas|%s", dedupeKey, decision.FlagTo)
+			if err := s.insertFact(ctx, tx, domain.FactEdgeAsserted, string(edge.ID), in.Writer, ek, payload, in.Actor, ts); err != nil {
+				return store.ResolveResult{}, err
+			}
+		}
+		result = store.ResolveResult{Action: decision.Action, MatchKind: decision.MatchKind}
 
 	case domain.ActionAttach:
 		cand.ID = decision.Target
@@ -197,14 +235,43 @@ func upsertEntitySnapshot(ctx context.Context, tx pgx.Tx, e domain.Entity, ts ti
 		}
 	}
 	for _, emb := range e.Embeddings {
+		// The BYTEA `vector` is the round-trip / rebuild source of truth (byte-parallel
+		// with SQLite); the pgvector `embedding` is the search index, written from the
+		// same float32s via a `$n::vector` text-literal cast (NULL when empty).
+		var embArg any
+		if len(emb.Vector) > 0 {
+			embArg = vecLiteral(emb.Vector)
+		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO embeddings(entity_id, model, field, dim, vector) VALUES($1,$2,$3,$4,$5)
-			 ON CONFLICT (entity_id, model, field) DO UPDATE SET dim=EXCLUDED.dim, vector=EXCLUDED.vector`,
-			string(e.ID), emb.Model, emb.Field, len(emb.Vector), encodeVec(emb.Vector)); err != nil {
+			`INSERT INTO embeddings(entity_id, model, field, dim, vector, embedding) VALUES($1,$2,$3,$4,$5,$6::vector)
+			 ON CONFLICT (entity_id, model, field) DO UPDATE SET dim=EXCLUDED.dim, vector=EXCLUDED.vector, embedding=EXCLUDED.embedding`,
+			string(e.ID), emb.Model, emb.Field, len(emb.Vector), encodeVec(emb.Vector), embArg); err != nil {
 			return fmt.Errorf("insert embedding: %w", err)
 		}
 	}
-	return nil
+	// Keep the full-text index in sync from the STORED props (reflects an attach's
+	// jsonb-union), so search and the projection fold stay consistent — the analogue
+	// of the SQLite adapter's syncEntityFTS.
+	return syncEntitySearchText(ctx, tx, e.ID)
+}
+
+// syncEntitySearchText refreshes the tsvector for an entity from its CURRENTLY
+// STORED props (not the candidate's), so an attach's jsonb-union is reflected. If
+// the entity is gone (a merge/retract deleted it) the row — and its column — is
+// already gone, so this is a no-op.
+func syncEntitySearchText(ctx context.Context, tx pgx.Tx, id domain.EntityID) error {
+	var props []byte
+	var typ string
+	err := tx.QueryRow(ctx, `SELECT props, type FROM entities WHERE id=$1`, string(id)).Scan(&props, &typ)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	text := extractSearchText(props, typ)
+	_, err = tx.Exec(ctx, `UPDATE entities SET search_text = to_tsvector('simple', $1) WHERE id=$2`, text, string(id))
+	return err
 }
 
 func (s *Store) appendEntityFact(ctx context.Context, tx pgx.Tx, snapshot domain.Entity, writer domain.WriterID, dedupeKey string, actor domain.PrincipalID, ts time.Time) error {
