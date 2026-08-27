@@ -36,9 +36,10 @@ func openStore(t *testing.T) store.Store {
 }
 
 // mockHeyarr is an httptest server speaking heyarr's MCP JSON-RPC 2.0 wire shape.
-// It answers the PROPOSED get_external_ids reverse lookup (tmdb → work), the
-// contract ADR-0050 (heyarr PR #349) will make real; works maps the tmdb ids it
-// knows to heyarr work ids.
+// It answers heyarr's shipped get_external_ids reverse lookup (tmdb → work),
+// pinned to the real ADR-0050 contract (heyarr PR #355):
+// {external_ids:[{source,value,entity_type,entity_id}]}, an empty list on no
+// match. works maps the tmdb ids it knows to heyarr work ids.
 func mockHeyarr(t *testing.T, works map[string]string) *heyarr.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,12 +52,16 @@ func mockHeyarr(t *testing.T, works map[string]string) *heyarr.Client {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 
-		var structured any
+		// heyarr's get_external_ids returns a uniform list; empty on no match.
+		structured := map[string]any{"external_ids": []any{}}
 		if req.Params.Name == "get_external_ids" && req.Params.Arguments["source"] == "tmdb" {
 			if workID, ok := works[req.Params.Arguments["value"]]; ok {
-				structured = map[string]string{"entity_type": "work", "entity_id": workID}
-			} else {
-				structured = map[string]any{} // no match
+				structured = map[string]any{"external_ids": []map[string]string{{
+					"source":      "tmdb",
+					"value":       req.Params.Arguments["value"],
+					"entity_type": "work",
+					"entity_id":   workID,
+				}}}
 			}
 		}
 		sc, _ := json.Marshal(structured)
