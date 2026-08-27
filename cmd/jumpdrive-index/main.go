@@ -30,6 +30,16 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	// The `ingest` subcommand is a one-shot tool (YouTube video → graph nodes),
+	// distinct from the config-driven migrate|serve modes; dispatch it before
+	// run() reads the serve config.
+	if len(os.Args) > 1 && os.Args[1] == "ingest" {
+		if err := runIngest(log, os.Args[2:]); err != nil {
+			log.Error("fatal", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(log); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
