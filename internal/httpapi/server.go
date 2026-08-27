@@ -1,12 +1,18 @@
-// Package httpapi is the HTTP surface: a single POST /mcp endpoint carrying the
-// JSON-RPC MCP protocol, plus the estate's four-tier health baseline (alive /
-// ready). Routing is the stdlib ServeMux (Go 1.22 method+pattern) — no framework.
-// The bearer travels in the Authorization header and is handed to the MCP server,
-// which authenticates it via the service.
+// Package httpapi is the HTTP surface: the /mcp endpoint speaking the MCP
+// Streamable HTTP transport (spec revision 2025-06-18) — POST for JSON-RPC
+// request/response (a single application/json reply, with an Mcp-Session-Id
+// stamped on the initialize response), GET to open the server->client SSE
+// stream, and DELETE to terminate a session — plus the estate's health baseline
+// (alive / ready). Routing is the stdlib ServeMux (Go 1.22 method+pattern) — no
+// framework. The server is effectively stateless: each POST is self-authorized by
+// the bearer in the Authorization header, which is handed to the MCP server and
+// authenticated via the service, so the session id is nominal (echoed, never
+// hard-required) and the plain-POST path (no session id) keeps working.
 package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -14,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
 )
 
@@ -36,18 +43,39 @@ func New(m *mcp.Server, log *slog.Logger) *Server {
 // Routes returns the wrapped handler.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /mcp", s.handleMCP)
+	mux.HandleFunc("POST /mcp", s.handleMCPPost)
+	mux.HandleFunc("GET /mcp", s.handleMCPStream)
+	mux.HandleFunc("DELETE /mcp", s.handleMCPDelete)
 	mux.HandleFunc("GET /health/alive", func(w http.ResponseWriter, _ *http.Request) { writeText(w, http.StatusOK, "ok") })
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) { writeText(w, http.StatusOK, "ready") })
 	return s.recoverPanics(mux)
 }
 
-func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
+// handleMCPPost is the Streamable HTTP request/response leg: it accepts a JSON-RPC
+// request and returns the single JSON-RPC response as application/json. On an
+// initialize request it also stamps a generated Mcp-Session-Id on the response;
+// on any other request it echoes back a client-supplied Mcp-Session-Id. The
+// session id is validated loosely — a POST WITHOUT one is never rejected (the M0
+// acceptance demo drives the endpoint with plain curl and no session id), because
+// the server is stateless and every request is self-authorized by its bearer.
+func (s *Server) handleMCPPost(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
 	if err != nil {
 		writeText(w, http.StatusBadRequest, "read error")
 		return
 	}
+	// Session id: fresh on initialize, echoed on everything else. Peek at the
+	// method without consuming the body the MCP server re-parses.
+	sessionID := strings.TrimSpace(r.Header.Get("Mcp-Session-Id"))
+	if isInitialize(body) {
+		if sessionID == "" {
+			sessionID = uuid.NewString()
+		}
+	}
+	if sessionID != "" {
+		w.Header().Set("Mcp-Session-Id", sessionID)
+	}
+
 	bearer := bearerFrom(r.Header.Get("Authorization"))
 	resp := s.mcp.Handle(r.Context(), bearer, body)
 	if resp == nil { // a notification: no body
@@ -56,6 +84,56 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(resp) //nolint:gosec // G705: a marshaled JSON-RPC body served as application/json — not HTML, no XSS vector
+}
+
+// handleMCPStream is the Streamable HTTP server->client leg: it opens a
+// text/event-stream that a standard MCP client holds open after initialize.
+// jumpdrive-index emits no server-initiated messages, so the stream sends an
+// opening heartbeat comment and then simply blocks until the client disconnects
+// or the request context is cancelled. Bearer auth applies as on POST.
+func (s *Server) handleMCPStream(w http.ResponseWriter, r *http.Request) {
+	if bearerFrom(r.Header.Get("Authorization")) == "" {
+		writeText(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeText(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	if sid := strings.TrimSpace(r.Header.Get("Mcp-Session-Id")); sid != "" {
+		h.Set("Mcp-Session-Id", sid)
+	}
+	w.WriteHeader(http.StatusOK)
+	// An SSE comment line: proves the stream is open without being a protocol
+	// message (there are none to send).
+	_, _ = io.WriteString(w, ": jumpdrive-index mcp stream open\n\n")
+	flusher.Flush()
+	<-r.Context().Done() // block until client disconnect / shutdown, then return cleanly
+}
+
+// handleMCPDelete acknowledges session termination. The server holds no session
+// state, so this is nominal — a 200 is enough. Bearer auth applies.
+func (s *Server) handleMCPDelete(w http.ResponseWriter, r *http.Request) {
+	if bearerFrom(r.Header.Get("Authorization")) == "" {
+		writeText(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	writeText(w, http.StatusOK, "ok")
+}
+
+// isInitialize reports whether a JSON-RPC request body is an MCP initialize call,
+// so the POST leg knows to stamp a session id. It tolerates a malformed body
+// (returns false) — the MCP server does the authoritative parse.
+func isInitialize(body []byte) bool {
+	var probe struct {
+		Method string `json:"method"`
+	}
+	return json.Unmarshal(body, &probe) == nil && probe.Method == "initialize"
 }
 
 // bearerFrom extracts the token from an "Authorization: Bearer <tok>" header,
