@@ -161,6 +161,116 @@ func TestIngest_FullLoop(t *testing.T) {
 	}
 }
 
+// TestIngest_Rung2Clips proves rung 2: a transcript carrying timecoded segments
+// produces Clip nodes (each isPartOf the VideoObject, with the right
+// startOffset/endOffset), and a segment whose subject reconciles gets a TIMECODED
+// about edge from the Clip to the heyarr-work reference — while the rung-1
+// video-level about edge still holds.
+func TestIngest_Rung2Clips(t *testing.T) {
+	st := openStore(t)
+	hey := mockHeyarr(t, map[string]string{"348": "work-alien-123"})
+	meta := kroftMeta()
+	meta.Segments = []ingest.Segment{
+		// 3:12–4:05, about Alien (tmdb 348) — this span reconciles.
+		{StartOffset: 192, EndOffset: 245, Text: "The xenomorph first appears here.", SubjectTMDB: []string{"348"}},
+		// A later span with no reconcilable subject — a Clip, but no about edge.
+		{StartOffset: 300.5, EndOffset: 360, Text: "On the film's sound design."},
+	}
+	ing := ingest.New(st, ingest.StaticCapability{Meta: meta}, hey)
+
+	res, err := ing.Ingest(ctx, ingest.Request{
+		Ref: "yt-kroft-alien", Owner: "kate", Visibility: domain.VisPublic, SubjectTMDB: []string{"348"},
+	})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	// Two segments → two Clip nodes; one reconciling segment → one Clip about edge.
+	if len(res.Clips) != 2 {
+		t.Fatalf("expected 2 clips, got %d (%v)", len(res.Clips), res.Clips)
+	}
+	if len(res.ClipAboutWorks) != 1 {
+		t.Fatalf("expected 1 clip-level about work, got %d", len(res.ClipAboutWorks))
+	}
+
+	// Rung 1 still holds: the video-level about edge to the reconciled work.
+	if len(res.AboutWorks) != 1 {
+		t.Fatalf("rung-1 video-level about broke: got %d works", len(res.AboutWorks))
+	}
+	sub, err := st.Neighbors(ctx, af("kate"), store.NeighborQuery{Start: res.Video, MaxHops: 1})
+	if err != nil {
+		t.Fatalf("neighbors: %v", err)
+	}
+	if !hasEdge(sub, "about", res.Video, res.AboutWorks[0]) {
+		t.Error("rung-1 VideoObject --about--> heyarr-work edge missing")
+	}
+
+	// Each Clip is a Clip node, isPartOf the video, with the right offsets.
+	wantOffsets := map[float64]float64{192: 245, 300.5: 360}
+	sawAbout := false
+	for _, cid := range res.Clips {
+		clip, err := st.GetEntity(ctx, af("kate"), cid)
+		if err != nil {
+			t.Fatalf("get clip %s: %v", cid, err)
+		}
+		if clip.Type != "Clip" {
+			t.Errorf("clip %s type = %s, want Clip", cid, clip.Type)
+		}
+		start, end := clipOffsets(t, clip)
+		wantEnd, ok := wantOffsets[start]
+		if !ok || wantEnd != end {
+			t.Errorf("clip %s offsets = %v–%v, not an expected span", cid, start, end)
+		}
+
+		// Clip --isPartOf--> VideoObject.
+		csub, err := st.Neighbors(ctx, af("kate"), store.NeighborQuery{Start: cid, MaxHops: 1})
+		if err != nil {
+			t.Fatalf("clip neighbors: %v", err)
+		}
+		if !hasEdge(csub, "isPartOf", cid, res.Video) {
+			t.Errorf("clip %s missing --isPartOf--> VideoObject", cid)
+		}
+		// The reconciling span (starts at 192) must carry a Clip-level about edge
+		// to the SAME heyarr-work reference the video links (shared work node).
+		if start == 192 {
+			if !hasEdge(csub, "about", cid, res.ClipAboutWorks[0]) {
+				t.Errorf("timecoded clip %s missing --about--> heyarr-work edge", cid)
+			}
+			if res.ClipAboutWorks[0] != res.AboutWorks[0] {
+				t.Errorf("clip about work %s != video about work %s (should dedup onto one node)",
+					res.ClipAboutWorks[0], res.AboutWorks[0])
+			}
+			sawAbout = true
+		} else if hasEdge(csub, "about", cid, res.ClipAboutWorks[0]) {
+			t.Errorf("non-reconciling clip %s should not carry an about edge", cid)
+		}
+	}
+	if !sawAbout {
+		t.Error("no clip carried the timecoded about edge")
+	}
+}
+
+// TestIngest_NoSegmentsNoClips proves the rung-1 path is unchanged when the
+// transcript carries no timecodes: a video and channel, but no Clip nodes.
+func TestIngest_NoSegmentsNoClips(t *testing.T) {
+	st := openStore(t)
+	hey := mockHeyarr(t, map[string]string{"348": "work-alien-123"})
+	ing := ingest.New(st, ingest.StaticCapability{Meta: kroftMeta()}, hey)
+
+	res, err := ing.Ingest(ctx, ingest.Request{
+		Ref: "yt-kroft-alien", Owner: "kate", Visibility: domain.VisPublic, SubjectTMDB: []string{"348"},
+	})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if len(res.Clips) != 0 || len(res.ClipAboutWorks) != 0 {
+		t.Errorf("no segments → no clips, got clips=%d aboutWorks=%d", len(res.Clips), len(res.ClipAboutWorks))
+	}
+	if len(res.AboutWorks) != 1 {
+		t.Errorf("rung-1 about edge should still hold, got %d", len(res.AboutWorks))
+	}
+}
+
 // TestIngest_NoHeyarr proves 4a still runs without a reconciler: the video and
 // channel land, but no about edge is created.
 func TestIngest_NoHeyarr(t *testing.T) {
@@ -230,6 +340,19 @@ func propName(t *testing.T, e domain.Entity) string {
 	}
 	s, _ := m["name"].(string)
 	return s
+}
+
+// clipOffsets pulls the schema.org startOffset/endOffset (seconds) out of a Clip's
+// property bag; JSON numbers decode as float64.
+func clipOffsets(t *testing.T, e domain.Entity) (start, end float64) {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(e.Props, &m); err != nil {
+		t.Fatalf("unmarshal clip props: %v", err)
+	}
+	start, _ = m["startOffset"].(float64)
+	end, _ = m["endOffset"].(float64)
+	return start, end
 }
 
 func hasEdge(sub store.Subgraph, pred domain.Predicate, from, to domain.EntityID) bool {
