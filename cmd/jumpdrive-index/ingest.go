@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
@@ -60,13 +61,18 @@ func runIngest(log *slog.Logger, args []string) error {
 		}
 	}
 
+	ec, err := buildExecCapability()
+	if err != nil {
+		return err
+	}
+
 	// A typed-nil *heyarr.Client would be a non-nil interface (a footgun the
 	// ingestor documents against), so pass an untyped nil when disabled.
 	var ing *ingest.Ingestor
 	if reconciler != nil {
-		ing = ingest.New(st, ingest.NewExecCapability(), reconciler)
+		ing = ingest.New(st, ec, reconciler)
 	} else {
-		ing = ingest.New(st, ingest.NewExecCapability(), nil)
+		ing = ingest.New(st, ec, nil)
 	}
 
 	res, err := ing.Ingest(ctx, ingest.Request{
@@ -84,6 +90,34 @@ func runIngest(log *slog.Logger, args []string) error {
 		"video", res.Video, "channel", res.Channel,
 		"about_works", res.AboutWorks, "transcribed", res.Transcribed)
 	return nil
+}
+
+// buildExecCapability wires the out-of-process ingest capability, selecting the
+// transcription backend from env (mirroring main.go's buildEmbedder). Unset — the
+// default — keeps today's local Whisper subprocess. JDX_INGEST_TRANSCRIBE=fabric
+// re-pins the speech-to-text step to the TechnoCore switchboard (Farcaster) — an
+// OpenAI-compatible /v1/audio/transcriptions endpoint — reading its base URL,
+// model and optional bearer from JDX_INGEST_TRANSCRIBE_{URL,MODEL,TOKEN}, keeping
+// the ML off-host so the binary stays static / CGO-off (ADR-0004).
+func buildExecCapability() (*ingest.ExecCapability, error) {
+	ec := ingest.NewExecCapability()
+	switch t := os.Getenv("JDX_INGEST_TRANSCRIBE"); t {
+	case "", "local", "whisper":
+		// Default: the local Whisper subprocess (unchanged behaviour).
+	case "fabric":
+		ft, err := ingest.NewFabricTranscriber(
+			os.Getenv("JDX_INGEST_TRANSCRIBE_URL"),
+			os.Getenv("JDX_INGEST_TRANSCRIBE_MODEL"),
+			secret.Value(os.Getenv("JDX_INGEST_TRANSCRIBE_TOKEN")),
+		)
+		if err != nil {
+			return nil, err
+		}
+		ec.Transcriber = ft
+	default:
+		return nil, fmt.Errorf("unknown transcribe provider %q (want local|fabric)", t)
+	}
+	return ec, nil
 }
 
 // splitCSV splits a comma-separated flag value into trimmed, non-empty items.

@@ -18,6 +18,11 @@ import (
 //     node — the caller cannot invent a video),
 //   - Whisper missing → Fetch returns metadata with an empty Transcript (a
 //     metadata-only node — a valid, degraded ingestion).
+//
+// The speech-to-text step is pluggable: with a Transcriber set it re-pins
+// transcription to the fabric (off-host, ADR-0004) after staging the audio with
+// yt-dlp; unset, it keeps the local Whisper subprocess. Both paths are
+// best-effort — any failure yields an empty transcript, never an error.
 type ExecCapability struct {
 	// YtDlpPath and WhisperPath are the executables to invoke; defaults are the
 	// bare command names (resolved via PATH). WorkDir is where audio/transcripts
@@ -25,6 +30,11 @@ type ExecCapability struct {
 	YtDlpPath   string
 	WhisperPath string
 	WorkDir     string
+
+	// Transcriber, when set, replaces the local Whisper subprocess for the
+	// speech-to-text step (yt-dlp still stages the audio). Nil keeps the local
+	// Whisper path.
+	Transcriber Transcriber
 }
 
 // NewExecCapability returns an ExecCapability with default command names.
@@ -79,16 +89,18 @@ func (c *ExecCapability) Fetch(ctx context.Context, ref string) (Metadata, error
 	return md, nil
 }
 
-// transcribe stages the audio with yt-dlp and runs Whisper on it, returning the
-// transcript text. It is entirely best-effort: a missing Whisper or any failure
-// yields an empty string (a metadata-only node), never an error.
+// transcribe stages the audio with yt-dlp and turns it into text — through the
+// fabric when a Transcriber is set, else the local Whisper subprocess. It is
+// entirely best-effort: a missing Whisper, an unreachable fabric, or any other
+// failure yields an empty string (a metadata-only node), never an error.
 func (c *ExecCapability) transcribe(ctx context.Context, ref string) string {
-	whisper := c.WhisperPath
-	if whisper == "" {
-		whisper = "whisper"
-	}
-	if _, err := exec.LookPath(whisper); err != nil {
-		return ""
+	whisper := c.whisperPath()
+	// Without a fabric transcriber, a missing local Whisper means no transcript —
+	// bail before staging audio. With one, Whisper is irrelevant.
+	if c.Transcriber == nil {
+		if _, err := exec.LookPath(whisper); err != nil {
+			return ""
+		}
 	}
 	dir := c.WorkDir
 	if dir == "" {
@@ -106,6 +118,13 @@ func (c *ExecCapability) transcribe(ctx context.Context, ref string) string {
 	if err := dl.Run(); err != nil {
 		return ""
 	}
+
+	// The fabric transcriber (off-host, ADR-0004) takes precedence when set; its
+	// failures degrade to an empty transcript exactly like a missing Whisper.
+	if c.Transcriber != nil {
+		return bestEffortTranscribe(ctx, c.Transcriber, audio)
+	}
+
 	//nolint:gosec // G204: operator-configured Whisper on audio we just staged in our own temp dir.
 	w := exec.CommandContext(ctx, whisper, audio, "--output_format", "txt", "--output_dir", dir)
 	if err := w.Run(); err != nil {
@@ -117,6 +136,14 @@ func (c *ExecCapability) transcribe(ctx context.Context, ref string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(txt))
+}
+
+// whisperPath resolves the local Whisper command, defaulting to the bare name.
+func (c *ExecCapability) whisperPath() string {
+	if c.WhisperPath == "" {
+		return "whisper"
+	}
+	return c.WhisperPath
 }
 
 // isoDate converts yt-dlp's "YYYYMMDD" to a schema.org "YYYY-MM-DD" date, leaving
