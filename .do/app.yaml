@@ -1,0 +1,163 @@
+# DigitalOcean App Platform spec for the hosted (Track B) instance of
+# jumpdrive-index — the Postgres-backed, source-built deploy. Distinct from the
+# Starchart homelab path (systemd + deploy/docker/Dockerfile). Mirrors the
+# jumpdrive-broker template.
+#
+# 🔴 DO NOT `doctl apps update --spec` THIS FILE DIRECTLY.
+#
+# Applying a committed spec REPLACES the live one, and every env of type SECRET in
+# this file has no value — so a blind apply wipes the real secrets and the app
+# crash-loops on the next deploy with a config error that looks nothing like its
+# cause. This file is the shape of the app, not its contents.
+#
+# To change the live app: fetch the live spec, edit that, apply it back.
+#   doctl --context rarebit apps spec get <app-id> > /tmp/live.yaml
+#   # edit /tmp/live.yaml
+#   doctl --context rarebit apps update <app-id> --spec /tmp/live.yaml
+# The live spec returns SECRETs as EV[1:…] references that round-trip safely.
+
+name: jumpdrive-index
+region: sgp
+
+# One instance. Migrations run as a PRE_DEPLOY phase (below), so the service is
+# migration-free at boot, but the projection is still read up front — see
+# cmd/jumpdrive-index/main.go. Raising instance_count is safe for serving; the
+# migrate job stays instance_count: 1 regardless.
+services:
+  - name: index
+    instance_count: 1
+    instance_size_slug: basic-xxs
+
+    github:
+      repo: rarebit-one/jumpdrive-index
+      branch: main
+      deploy_on_push: true
+
+    # Source build: App Platform builds this Dockerfile (the root one, which
+    # compiles the binary in-image), NOT deploy/docker/Dockerfile.
+    dockerfile_path: Dockerfile
+    http_port: 8090
+
+    # TWO probes, not one. They are not redundant and they gate different things:
+    # readiness pulls an instance from ROTATION, liveness RESTARTS it. An app with
+    # only `health_check` cannot express "this process is wedged, kill it"
+    # separately from "this process cannot serve right now". Both endpoints are
+    # served by internal/httpapi (GET /health/ready, GET /health/alive).
+    health_check:
+      http_path: /health/ready    # rotation gate
+      initial_delay_seconds: 30
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 5        # ~50s of sustained failure before out-of-rotation
+
+    liveness_health_check:
+      http_path: /health/alive    # restart gate — process hung
+      period_seconds: 10
+      timeout_seconds: 1
+      failure_threshold: 9
+
+    envs:
+      - key: JDX_MODE
+        scope: RUN_TIME
+        value: serve
+
+      # Hosted backend: Postgres, bound to the dedicated dev database declared
+      # below. App Platform substitutes the real DSN at deploy time, so the
+      # credential is never in this file.
+      - key: JDX_BACKEND
+        scope: RUN_TIME
+        value: postgres
+      - key: JDX_DSN
+        scope: RUN_TIME
+        value: ${jumpdrive-index-db.DATABASE_URL}
+
+      # Bind all interfaces (App Platform fronts the instance). A routable address
+      # REQUIRES auth or the process refuses to boot (ADR-0011) — keep JDX_AUTH on.
+      - key: JDX_HTTP_ADDR
+        scope: RUN_TIME
+        value: ":8090"
+      - key: JDX_AUTH
+        scope: RUN_TIME
+        value: "true"
+
+      # Identity: delegate to a Jumpdrive authorizer for the hosted deploy. The
+      # URL is plain config; the shared secret is set OUT OF BAND (see below).
+      - key: JDX_IDENTITY
+        scope: RUN_TIME
+        value: jumpdrive
+      - key: JDX_JUMPDRIVE_URL
+        scope: RUN_TIME
+        value: https://jumpdrive.example.com   # placeholder — set to the real authorizer
+
+      # ── Values are set OUT OF BAND, never here ────────────────────────────────
+      # Declared so the shape is reviewable; a value in this file would be a secret
+      # in git. Set them against the LIVE app (Settings → the component → env).
+      - key: JDX_JUMPDRIVE_SECRET
+        scope: RUN_TIME
+        type: SECRET
+
+      # ── Optional: heyarr reconciliation ──────────────────────────────────────
+      # BOTH must be set together or the process refuses to boot (a token armed
+      # with nowhere to go is a misconfiguration — see internal/config). Leave both
+      # unset to disable the heyarr link. To enable, uncomment and set the secret
+      # out of band:
+      # - key: JDX_HEYARR_URL
+      #   scope: RUN_TIME
+      #   value: https://heyarr.example.com/api/v1/mcp
+      # - key: JDX_HEYARR_TOKEN
+      #   scope: RUN_TIME
+      #   type: SECRET
+
+# Migrations run as their own phase, on the SAME image, selected by JDX_MODE.
+#
+# Not at container start: a migration failure there kills the process before it
+# binds a port, so the only symptom is a health-check timeout that says nothing
+# about migrations, and the deploy looks like a networking problem. As its own
+# phase it fails with a readable error and the previous version keeps serving.
+#
+# It also decouples migrations from instance_count — boot-time migration with N
+# replicas is N racing writers.
+#
+# JDX_MODE is an ENV rather than a run_command because the runtime image is
+# `scratch`: there is no shell for App Platform to invoke.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    github:
+      repo: rarebit-one/jumpdrive-index
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    envs:
+      - key: JDX_MODE
+        scope: RUN_TIME
+        value: migrate
+      - key: JDX_BACKEND
+        scope: RUN_TIME
+        value: postgres
+      - key: JDX_DSN
+        scope: RUN_TIME
+        value: ${jumpdrive-index-db.DATABASE_URL}
+      # NO identity/auth credentials here, deliberately. The migrate path only
+      # opens the store and applies migrations — it builds no access model and
+      # binds no port — so JDX_IDENTITY/JDX_AUTH/JDX_JUMPDRIVE_SECRET would be
+      # credential surface for a component that reads none of them. config.Load is
+      # mode-aware and stays strict on the serve path.
+
+# A dedicated dev database: single node, limited backups, ~$7/mo.
+#
+# Deliberately its OWN managed database, NOT a shared cluster. Sharing would
+# couple jumpdrive-index's lifecycle to another app's — a resize, a version
+# upgrade, or connection-limit exhaustion there would hit this service — and make
+# this instance the odd deployment relative to the documented path.
+#
+# Revisit before the index is a load-bearing system of record: a dev database is
+# not durable.
+databases:
+  - name: jumpdrive-index-db
+    engine: PG
+    version: "16"
+    production: false
