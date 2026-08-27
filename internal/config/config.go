@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
+	"github.com/rarebit-one/jumpdrive-index/internal/secret"
 )
 
 // Mode selects the run phase. Migrations run as a separate phase, never at boot
@@ -66,6 +67,13 @@ type Config struct {
 
 	// Thresholds are the resolve vector bands (validated: AutoMerge > Review).
 	Thresholds domain.Thresholds
+
+	// HeyarrURL is the base URL of a heyarr MCP endpoint (…/api/v1/mcp) the index
+	// links to by reference; HeyarrToken is its bearer. Both are OPTIONAL — an
+	// unset URL simply disables heyarr reconciliation. A token set with no URL is
+	// a misconfiguration (a credential armed with nowhere to go) and is rejected.
+	HeyarrURL   string
+	HeyarrToken secret.Value
 }
 
 // Load reads and validates configuration from getenv (falls back to os.Getenv
@@ -87,6 +95,8 @@ func Load(getenv func(string) string) (*Config, error) {
 		PrincipalsFile: getenv("JDX_PRINCIPALS_FILE"),
 		JumpdriveURL:   getenv("JDX_JUMPDRIVE_URL"),
 		HTTPAddr:       get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
+		HeyarrURL:      getenv("JDX_HEYARR_URL"),
+		HeyarrToken:    secret.Value(getenv("JDX_HEYARR_TOKEN")),
 		Thresholds: domain.Thresholds{
 			AutoMerge: 0.94,
 			Review:    0.86,
@@ -135,6 +145,11 @@ func Load(getenv func(string) string) (*Config, error) {
 	// Identity-aware: the Jumpdrive delegate needs an authorizer URL to serve.
 	if c.Mode == ModeServe && c.IdentityMode == IdentityJumpdrive && c.JumpdriveURL == "" {
 		errs = append(errs, errors.New("JDX_JUMPDRIVE_URL: required when JDX_IDENTITY=jumpdrive"))
+	}
+	// A heyarr token armed with no endpoint is a misconfiguration, not a silent
+	// no-op — the credential would never be sent, so fail loud (default-deny).
+	if !c.HeyarrToken.IsZero() && c.HeyarrURL == "" {
+		errs = append(errs, errors.New("JDX_HEYARR_TOKEN: set with no JDX_HEYARR_URL (a credential with nowhere to go)"))
 	}
 
 	// ADR-0011: refuse to serve unauthenticated on a routable address.
