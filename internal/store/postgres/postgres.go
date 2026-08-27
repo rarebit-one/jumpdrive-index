@@ -5,10 +5,11 @@
 // and concurrency (pg_advisory_xact_lock serialises the resolve→append→project
 // window, where SQLite relies on its single writer).
 //
-// This is the CORE: append/resolve/get/merge/retract-entity/rebuild + the
-// access-filtered reads. Vector search, full-text, traversal, edge retraction
-// and the governed-write path are store.ErrNotImplemented stubs (the conformance
-// suite skips them) and land in follow-ups.
+// The adapter is at FULL PARITY with SQLite: append/resolve (external-id AND the
+// vector two-band)/get/merge/retract + the access-filtered reads + pgvector
+// SemanticSearch + tsvector FullTextSearch + the access-filtered Neighbors
+// traversal + RetractEdge + the governed-write path (Propose/DecideProposal/
+// ListProposals) — so every conformance subtest runs against both adapters.
 package postgres
 
 import (

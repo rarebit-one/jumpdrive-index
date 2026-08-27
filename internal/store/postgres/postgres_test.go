@@ -39,7 +39,7 @@ func openClean(t *testing.T, dsn string) store.Store {
 		t.Fatalf("Migrate: %v", err)
 	}
 	if _, err := st.pool.Exec(ctx,
-		`TRUNCATE facts, entities, entity_external_ids, entity_labels, embeddings, edges RESTART IDENTITY CASCADE`); err != nil {
+		`TRUNCATE facts, entities, entity_external_ids, entity_labels, embeddings, edges, proposals RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
