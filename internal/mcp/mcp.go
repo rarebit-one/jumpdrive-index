@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/rarebit-one/jumpdrive-index/internal/domain"
 	"github.com/rarebit-one/jumpdrive-index/internal/service"
+	"github.com/rarebit-one/jumpdrive-index/internal/store"
 )
 
 // ProtocolVersion is the MCP revision this server speaks.
@@ -144,7 +146,40 @@ func (s *Server) callTool(ctx context.Context, bearer string, req rpcRequest) []
 		// Service/domain errors surface as an isError tool result, not transport errors.
 		return s.ok(req.ID, toolError(err.Error()))
 	}
-	return s.ok(req.ID, toolResult(result))
+	return s.ok(req.ID, toolResult(sanitizeForAgent(result)))
+}
+
+// sanitizeForAgent strips the embedding vectors from entities in a tool result.
+// Vectors are internal machinery (dedup + KNN); an agent never needs them, and a
+// single entity's 1024-float vector inflates a result by ~10KB — enough to
+// swamp an agent's context window and time out its model on an otherwise tiny
+// graph. The fact log keeps the vectors (this only shapes the MCP read view).
+func sanitizeForAgent(v any) any {
+	switch t := v.(type) {
+	case domain.Entity:
+		t.Embeddings = nil
+		return t
+	case []domain.Entity:
+		for i := range t {
+			t[i].Embeddings = nil
+		}
+		return t
+	case []store.ScoredEntity:
+		for i := range t {
+			t[i].Entity.Embeddings = nil
+		}
+		return t
+	case store.Subgraph:
+		for i := range t.Entities {
+			t.Entities[i].Embeddings = nil
+		}
+		return t
+	case store.ResolveResult:
+		t.Entity.Embeddings = nil
+		return t
+	default:
+		return v
+	}
 }
 
 // ---- result shaping ----
