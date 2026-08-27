@@ -76,7 +76,7 @@ func (s *Store) AppendEntityFact(ctx context.Context, in store.AppendEntityInput
 	// Resolve inputs. Vector neighbours are a later milestone (SemanticSearch),
 	// so only the external-id path is exercised here; resolve falls back to
 	// insert-new when there is no external match.
-	extHits, err := externalHitsTx(ctx, tx, cand.ExternalKeys())
+	extHits, err := externalHitsTx(ctx, tx, cand.Space, cand.ExternalKeys())
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
@@ -227,9 +227,12 @@ func upsertEntitySnapshot(ctx context.Context, tx *sql.Tx, e domain.Entity, ts t
 	}
 
 	for _, x := range e.ExternalIDs {
+		// space is denormalised from the parent so UNIQUE(space, key) can hold it;
+		// OR IGNORE means a (space, key) already taken in this space is a no-op (the
+		// authoritative row was written by whichever entity claimed it first).
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO entity_external_ids(entity_id, scheme, value, key) VALUES(?,?,?,?)`,
-			string(e.ID), x.Scheme, x.Value, x.Key()); err != nil {
+			`INSERT OR IGNORE INTO entity_external_ids(entity_id, scheme, value, key, space) VALUES(?,?,?,?,?)`,
+			string(e.ID), x.Scheme, x.Value, x.Key(), string(e.Space)); err != nil {
 			return fmt.Errorf("insert external id: %w", err)
 		}
 	}
@@ -444,18 +447,23 @@ func (s *Store) ResolveByExternalID(ctx context.Context, af access.Filter, keys 
 
 // ---- read helpers ----
 
-func externalHitsTx(ctx context.Context, tx *sql.Tx, keys []string) ([]domain.EntityID, error) {
+// externalHitsTx returns the existing entities in `space` that carry any of keys,
+// oldest first. It is SCOPED to the write's target space (ADR-0003): resolve in
+// one space can neither attach to nor reveal an entity in another, and with
+// UNIQUE(space, key) a key resolves to at most one entity per space.
+func externalHitsTx(ctx context.Context, tx *sql.Tx, space domain.SpaceID, keys []string) ([]domain.EntityID, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	args := make([]any, len(keys))
-	for i, k := range keys {
-		args[i] = k
+	args := make([]any, 0, len(keys)+1)
+	args = append(args, string(space))
+	for _, k := range keys {
+		args = append(args, k)
 	}
-	//nolint:gosec // G202: only a `?`-placeholder count is concatenated; keys are parameters
+	//nolint:gosec // G202: only a `?`-placeholder count is concatenated; space+keys are parameters
 	rows, err := tx.QueryContext(ctx,
 		`SELECT DISTINCT e.id FROM entities e JOIN entity_external_ids x ON x.entity_id=e.id
-		 WHERE x.key IN (`+placeholders(len(keys))+`) ORDER BY e.created_at, e.id`, args...)
+		 WHERE x.space = ? AND x.key IN (`+placeholders(len(keys))+`) ORDER BY e.created_at, e.id`, args...)
 	if err != nil {
 		return nil, err
 	}

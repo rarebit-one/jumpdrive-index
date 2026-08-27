@@ -85,7 +85,7 @@ func (s *Store) AppendEntityFact(ctx context.Context, in store.AppendEntityInput
 		return store.ResolveResult{}, err
 	}
 
-	extHits, err := externalHitsTx(ctx, tx, cand.ExternalKeys())
+	extHits, err := externalHitsTx(ctx, tx, cand.Space, cand.ExternalKeys())
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
@@ -228,9 +228,12 @@ func upsertEntitySnapshot(ctx context.Context, tx pgx.Tx, e domain.Entity, ts ti
 	}
 
 	for _, x := range e.ExternalIDs {
+		// space is denormalised from the parent so UNIQUE(space, key) can hold it;
+		// ON CONFLICT DO NOTHING means a (space, key) already taken in this space is a
+		// no-op (the authoritative row belongs to whichever entity claimed it first).
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO entity_external_ids(entity_id, scheme, value, key) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-			string(e.ID), x.Scheme, x.Value, x.Key()); err != nil {
+			`INSERT INTO entity_external_ids(entity_id, scheme, value, key, space) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+			string(e.ID), x.Scheme, x.Value, x.Key(), string(e.Space)); err != nil {
 			return fmt.Errorf("insert external id: %w", err)
 		}
 	}
@@ -472,17 +475,22 @@ func (s *Store) ResolveByExternalID(ctx context.Context, af access.Filter, keys 
 
 // ---- read helpers ----
 
-func externalHitsTx(ctx context.Context, tx pgx.Tx, keys []string) ([]domain.EntityID, error) {
+// externalHitsTx returns the existing entities in `space` that carry any of keys,
+// oldest first. It is SCOPED to the write's target space (ADR-0003): resolve in
+// one space can neither attach to nor reveal an entity in another, and with
+// UNIQUE(space, key) a key resolves to at most one entity per space.
+func externalHitsTx(ctx context.Context, tx pgx.Tx, space domain.SpaceID, keys []string) ([]domain.EntityID, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
 	ab := &argList{}
+	spacePh := ab.add(string(space))
 	ph := make([]string, len(keys))
 	for i, k := range keys {
 		ph[i] = ab.add(k)
 	}
 	q := `SELECT DISTINCT e.id, e.created_at FROM entities e JOIN entity_external_ids x ON x.entity_id=e.id
-		WHERE x.key IN (` + strings.Join(ph, ",") + `) ORDER BY e.created_at, e.id` //nolint:gosec // G202: placeholder list only; keys are parameters
+		WHERE x.space = ` + spacePh + ` AND x.key IN (` + strings.Join(ph, ",") + `) ORDER BY e.created_at, e.id` //nolint:gosec // G202: placeholder list only; space+keys are parameters
 	rows, err := tx.Query(ctx, q, ab.vals...)
 	if err != nil {
 		return nil, err

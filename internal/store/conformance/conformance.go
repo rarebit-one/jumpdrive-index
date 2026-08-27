@@ -49,6 +49,7 @@ func RunStoreSuite(t *testing.T, open OpenFunc) {
 	t.Run("direct_merge_and_attach_prop_union", func(t *testing.T) { testDirectMergeAndPropUnion(t, open(t)) })
 	t.Run("full_text_search_ranks_and_filters", func(t *testing.T) { testFullTextSearch(t, open(t)) })
 	t.Run("retract_edge_removes_from_traversal", func(t *testing.T) { testRetractEdge(t, open(t)) })
+	t.Run("external_id_uniqueness_is_per_space", func(t *testing.T) { testPerSpaceExternalID(t, open(t)) })
 }
 
 var ctx = context.Background()
@@ -613,5 +614,49 @@ func testRetractEdge(t *testing.T, st store.Store) {
 	}
 	if sub, _ := st.Neighbors(ctx, readAF("kate"), store.NeighborQuery{Start: a.Entity.ID, MaxHops: 1}); hasEntityNamed(sub, "B") {
 		t.Error("B should be unreachable after the edge is retracted")
+	}
+}
+
+// testPerSpaceExternalID proves ADR-0003: an external id is unique PER SPACE, not
+// globally, and resolve-before-create is scoped to the write's target space. The
+// same key K asserted in two different spaces produces two DISTINCT nodes — the
+// write in space B must NOT attach to (or even see) the private node in space A
+// (the deferred P1). Under the old global schema this write would have attached
+// across the space boundary; here it inserts a new node, and each space resolves
+// K to only its own entity.
+func testPerSpaceExternalID(t *testing.T, st store.Store) {
+	k := domain.ExternalID{Scheme: "tmdb", Value: "700"}
+
+	ea := mkEntity("Movie", "in-space-A", "private", "alice", k)
+	ea.Space = "A"
+	a := mustAppend(t, st, ea, "alice", "ps-a")
+
+	// Same external id, DIFFERENT space, different owner and dedupe key.
+	eb := mkEntity("Movie", "in-space-B", "private", "bob", k)
+	eb.Space = "B"
+	b := mustAppend(t, st, eb, "bob", "ps-b")
+
+	if b.Action != domain.ActionInsertNew {
+		t.Fatalf("cross-space write: action=%q, want insert_new (a write must not resolve across spaces)", b.Action)
+	}
+	if b.Entity.ID == a.Entity.ID {
+		t.Fatal("LEAK: a write in space B attached to space A's private entity (P1)")
+	}
+
+	// The key resolves within EACH space to only that space's node (and the access
+	// filter keeps each owner's private node to themselves).
+	hitsA, err := st.ResolveByExternalID(ctx, readAF("alice", "A"), []string{k.Key()})
+	if err != nil {
+		t.Fatalf("ResolveByExternalID(A): %v", err)
+	}
+	if len(hitsA) != 1 || hitsA[0].ID != a.Entity.ID {
+		t.Errorf("space A should resolve K to only its own node; got %v", hitsA)
+	}
+	hitsB, err := st.ResolveByExternalID(ctx, readAF("bob", "B"), []string{k.Key()})
+	if err != nil {
+		t.Fatalf("ResolveByExternalID(B): %v", err)
+	}
+	if len(hitsB) != 1 || hitsB[0].ID != b.Entity.ID {
+		t.Errorf("space B should resolve K to only its own node (proving the id was actually stored, not silently dropped); got %v", hitsB)
 	}
 }
