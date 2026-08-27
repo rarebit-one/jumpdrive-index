@@ -32,7 +32,7 @@ func newServer(t *testing.T) *mcp.Server {
 		{Token: "kate-tok", ID: "kate", Spaces: []domain.SpaceID{"fam"}},
 		{Token: "bob-tok", ID: "bob"},
 	}})
-	return mcp.New(service.New(st, am))
+	return mcp.New(service.New(st, am, nil))
 }
 
 // call drives one JSON-RPC request and returns the parsed response.

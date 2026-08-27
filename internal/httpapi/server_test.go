@@ -34,7 +34,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	am, _ := starchart.New(starchart.Config{Principals: []starchart.PrincipalConfig{
 		{Token: "kate-tok", ID: "kate", Spaces: []domain.SpaceID{"fam"}},
 	}})
-	h := httpapi.New(mcp.New(service.New(st, am)), nil)
+	h := httpapi.New(mcp.New(service.New(st, am, nil)), nil)
 	ts := httptest.NewServer(h.Routes())
 	t.Cleanup(ts.Close)
 	return ts

@@ -19,6 +19,7 @@ import (
 	"github.com/rarebit-one/jumpdrive-index/internal/access/jumpdrive"
 	"github.com/rarebit-one/jumpdrive-index/internal/access/starchart"
 	"github.com/rarebit-one/jumpdrive-index/internal/config"
+	"github.com/rarebit-one/jumpdrive-index/internal/embed"
 	"github.com/rarebit-one/jumpdrive-index/internal/httpapi"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
 	"github.com/rarebit-one/jumpdrive-index/internal/service"
@@ -68,7 +69,12 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("access model: %w", err)
 	}
 
-	srv := httpapi.New(mcp.New(service.New(st, am)), log)
+	em, err := buildEmbedder()
+	if err != nil {
+		return fmt.Errorf("embedder: %w", err)
+	}
+
+	srv := httpapi.New(mcp.New(service.New(st, am, em)), log)
 
 	sigctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -117,5 +123,18 @@ func buildAccessModel(cfg *config.Config) (access.Model, error) {
 		})
 	default:
 		return nil, fmt.Errorf("unknown identity mode %q", cfg.IdentityMode)
+	}
+}
+
+// buildEmbedder wires the optional embedding provider from env. "none" (the
+// default) disables the semantic path; "ollama" needs JDX_EMBED_URL + JDX_EMBED_MODEL.
+func buildEmbedder() (embed.Embedder, error) {
+	switch p := os.Getenv("JDX_EMBED_PROVIDER"); p {
+	case "", "none":
+		return nil, nil
+	case "ollama":
+		return embed.NewOllama(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"))
+	default:
+		return nil, fmt.Errorf("unknown embed provider %q (want none|ollama)", p)
 	}
 }
