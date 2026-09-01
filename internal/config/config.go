@@ -65,6 +65,18 @@ type Config struct {
 	// unauthenticated on a routable (non-loopback) address is a hard refusal.
 	AuthEnabled bool
 
+	// MCPAuthMode selects how /mcp callers authenticate: "bearer" (the default —
+	// identical to before this field existed) resolves a shared bearer to a
+	// principal; "voidbind" requires `Authorization: Device <cert>~<possession>`
+	// verified offline against MCPVoidbindTrustFile, and the authenticated user
+	// id becomes the effective bearer (a voidbind principal sets its Token to its
+	// user public key).
+	MCPAuthMode string
+	// MCPVoidbindTrustFile is the pinned-users file (one rendered ed25519 public
+	// key per line), re-read per request so un-pinning revokes immediately.
+	// REQUIRED when MCPAuthMode is "voidbind".
+	MCPVoidbindTrustFile string
+
 	// Thresholds are the resolve vector bands (validated: AutoMerge > Review).
 	Thresholds domain.Thresholds
 
@@ -91,12 +103,14 @@ func Load(getenv func(string) string) (*Config, error) {
 
 	var errs []error
 	c := &Config{
-		DSN:            getenv("JDX_DSN"),
-		PrincipalsFile: getenv("JDX_PRINCIPALS_FILE"),
-		JumpdriveURL:   getenv("JDX_JUMPDRIVE_URL"),
-		HTTPAddr:       get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
-		HeyarrURL:      getenv("JDX_HEYARR_URL"),
-		HeyarrToken:    secret.Value(getenv("JDX_HEYARR_TOKEN")),
+		DSN:                  getenv("JDX_DSN"),
+		PrincipalsFile:       getenv("JDX_PRINCIPALS_FILE"),
+		JumpdriveURL:         getenv("JDX_JUMPDRIVE_URL"),
+		HTTPAddr:             get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
+		MCPAuthMode:          strings.ToLower(get("JDX_MCP_AUTH_MODE", "bearer")),
+		MCPVoidbindTrustFile: getenv("JDX_MCP_VOIDBIND_TRUST_FILE"),
+		HeyarrURL:            getenv("JDX_HEYARR_URL"),
+		HeyarrToken:          secret.Value(getenv("JDX_HEYARR_TOKEN")),
 		Thresholds: domain.Thresholds{
 			AutoMerge: 0.94,
 			Review:    0.86,
@@ -131,6 +145,18 @@ func Load(getenv func(string) string) (*Config, error) {
 		c.AuthEnabled = false
 	default:
 		errs = append(errs, fmt.Errorf("JDX_AUTH: unrecognised %q (want 1|0|true|false)", v))
+	}
+
+	// MCPAuthMode: a closed set, default-deny on anything else; voidbind needs a
+	// pinned-users file to have anyone to admit.
+	switch c.MCPAuthMode {
+	case "bearer":
+	case "voidbind":
+		if c.MCPVoidbindTrustFile == "" {
+			errs = append(errs, errors.New("JDX_MCP_VOIDBIND_TRUST_FILE: required when JDX_MCP_AUTH_MODE=voidbind"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("JDX_MCP_AUTH_MODE: unrecognised %q (want bearer|voidbind)", c.MCPAuthMode))
 	}
 
 	if err := c.Thresholds.Validate(); err != nil {
