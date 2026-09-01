@@ -14,12 +14,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
 	"github.com/rarebit-one/jumpdrive-index/internal/access/jumpdrive"
 	"github.com/rarebit-one/jumpdrive-index/internal/access/starchart"
 	"github.com/rarebit-one/jumpdrive-index/internal/config"
 	"github.com/rarebit-one/jumpdrive-index/internal/embed"
+	"github.com/rarebit-one/jumpdrive-index/internal/fabricauth"
 	"github.com/rarebit-one/jumpdrive-index/internal/httpapi"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
 	"github.com/rarebit-one/jumpdrive-index/internal/secret"
@@ -140,9 +142,11 @@ func buildAccessModel(cfg *config.Config) (access.Model, error) {
 // buildEmbedder wires the optional embedding provider from env. "none" (the
 // default) disables the semantic path; "ollama" needs JDX_EMBED_URL +
 // JDX_EMBED_MODEL; "fabric" is the TechnoCore switchboard (Farcaster) — an
-// OpenAI-compatible /v1/embeddings endpoint — and additionally accepts an
-// optional JDX_EMBED_TOKEN bearer, keeping the model off-host so the binary stays
-// static / CGO-off.
+// OpenAI-compatible /v1/embeddings endpoint. The fabric client authenticates
+// with a shared JDX_EMBED_TOKEN bearer, OR — when JDX_FABRIC_DEVICE_DIR names an
+// enrolled Voidbind device store — with a per-request Device credential (for a
+// fabric running FARCASTER_AUTH_MODE=voidbind). Either way no model runs in-process
+// so the binary stays static / CGO-off.
 func buildEmbedder() (embed.Embedder, error) {
 	switch p := os.Getenv("JDX_EMBED_PROVIDER"); p {
 	case "", "none":
@@ -150,6 +154,16 @@ func buildEmbedder() (embed.Embedder, error) {
 	case "ollama":
 		return embed.NewOllama(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"))
 	case "fabric":
+		// Voidbind Device auth takes precedence over the bearer when a device
+		// store is configured: hand the fabric client the Device-credential http
+		// client and drop the bearer (they are alternatives, not layered).
+		dev, err := fabricauth.Client(os.Getenv("JDX_FABRIC_DEVICE_DIR"), 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		if dev != nil {
+			return embed.NewFabric(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"), "", embed.WithFabricHTTPClient(dev))
+		}
 		return embed.NewFabric(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"), secret.Value(os.Getenv("JDX_EMBED_TOKEN")))
 	default:
 		return nil, fmt.Errorf("unknown embed provider %q (want none|ollama|fabric)", p)

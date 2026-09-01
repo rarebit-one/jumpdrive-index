@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
+	"github.com/rarebit-one/jumpdrive-index/internal/fabricauth"
 	"github.com/rarebit-one/jumpdrive-index/internal/heyarr"
 	"github.com/rarebit-one/jumpdrive-index/internal/ingest"
 	"github.com/rarebit-one/jumpdrive-index/internal/secret"
@@ -105,10 +107,25 @@ func buildExecCapability() (*ingest.ExecCapability, error) {
 	case "", "local", "whisper":
 		// Default: the local Whisper subprocess (unchanged behaviour).
 	case "fabric":
+		// Same Voidbind-vs-bearer choice as the embedder: when JDX_FABRIC_DEVICE_DIR
+		// names an enrolled device store, the transcriber presents a per-request
+		// Device credential (fabric in FARCASTER_AUTH_MODE=voidbind) instead of the
+		// bearer. Transcription can be slow, so the client keeps a long timeout.
+		dev, err := fabricauth.Client(os.Getenv("JDX_FABRIC_DEVICE_DIR"), 10*time.Minute)
+		if err != nil {
+			return nil, err
+		}
+		var topts []ingest.FabricTranscriberOption
+		token := secret.Value(os.Getenv("JDX_INGEST_TRANSCRIBE_TOKEN"))
+		if dev != nil {
+			topts = append(topts, ingest.WithHTTPClient(dev))
+			token = ""
+		}
 		ft, err := ingest.NewFabricTranscriber(
 			os.Getenv("JDX_INGEST_TRANSCRIBE_URL"),
 			os.Getenv("JDX_INGEST_TRANSCRIBE_MODEL"),
-			secret.Value(os.Getenv("JDX_INGEST_TRANSCRIBE_TOKEN")),
+			token,
+			topts...,
 		)
 		if err != nil {
 			return nil, err
