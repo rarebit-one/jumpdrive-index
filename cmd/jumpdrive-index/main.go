@@ -24,6 +24,7 @@ import (
 	"github.com/rarebit-one/jumpdrive-index/internal/fabricauth"
 	"github.com/rarebit-one/jumpdrive-index/internal/httpapi"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
+	"github.com/rarebit-one/jumpdrive-index/internal/mcpauth"
 	"github.com/rarebit-one/jumpdrive-index/internal/secret"
 	"github.com/rarebit-one/jumpdrive-index/internal/service"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
@@ -87,7 +88,13 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("embedder: %w", err)
 	}
 
-	srv := httpapi.New(mcp.New(service.New(st, am, em)), log)
+	var httpOpts []httpapi.Option
+	if cfg.MCPAuthMode == "voidbind" {
+		httpOpts = append(httpOpts, httpapi.WithAuthorizer(
+			mcpauth.NewVoidbind(mcpauth.PinnedUsersFromFile(cfg.MCPVoidbindTrustFile)),
+		))
+	}
+	srv := httpapi.New(mcp.New(service.New(st, am, em)), log, httpOpts...)
 
 	sigctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

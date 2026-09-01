@@ -22,22 +22,48 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
+	"github.com/rarebit-one/jumpdrive-index/internal/mcpauth"
 )
 
 const maxBodyBytes = 4 << 20 // 4 MiB request cap
 
 // Server is the HTTP handler set.
 type Server struct {
-	mcp *mcp.Server
-	log *slog.Logger
+	mcp  *mcp.Server
+	log  *slog.Logger
+	auth mcpauth.Authorizer
 }
 
-// New builds the HTTP server around an MCP server.
-func New(m *mcp.Server, log *slog.Logger) *Server {
+// Option configures a Server.
+type Option func(*Server)
+
+// WithAuthorizer overrides how a request is reduced to its effective bearer. The
+// default is the legacy Bearer extractor; voidbind mode supplies an
+// mcpauth.Voidbind that verifies a Device credential instead.
+func WithAuthorizer(a mcpauth.Authorizer) Option {
+	return func(s *Server) {
+		if a != nil {
+			s.auth = a
+		}
+	}
+}
+
+// New builds the HTTP server around an MCP server. By default callers authenticate
+// with the raw Authorization bearer; WithAuthorizer swaps in Device-credential
+// (voidbind) auth.
+func New(m *mcp.Server, log *slog.Logger, opts ...Option) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{mcp: m, log: log}
+	s := &Server{
+		mcp:  m,
+		log:  log,
+		auth: mcpauth.BearerFunc(func(r *http.Request) string { return bearerFrom(r.Header.Get("Authorization")) }),
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Routes returns the wrapped handler.
@@ -76,7 +102,7 @@ func (s *Server) handleMCPPost(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Mcp-Session-Id", sessionID)
 	}
 
-	bearer := bearerFrom(r.Header.Get("Authorization"))
+	bearer := s.auth.EffectiveBearer(r)
 	resp := s.mcp.Handle(r.Context(), bearer, body)
 	if resp == nil { // a notification: no body
 		w.WriteHeader(http.StatusNoContent)
@@ -92,7 +118,7 @@ func (s *Server) handleMCPPost(w http.ResponseWriter, r *http.Request) {
 // opening heartbeat comment and then simply blocks until the client disconnects
 // or the request context is cancelled. Bearer auth applies as on POST.
 func (s *Server) handleMCPStream(w http.ResponseWriter, r *http.Request) {
-	if bearerFrom(r.Header.Get("Authorization")) == "" {
+	if s.auth.EffectiveBearer(r) == "" {
 		writeText(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -119,7 +145,7 @@ func (s *Server) handleMCPStream(w http.ResponseWriter, r *http.Request) {
 // handleMCPDelete acknowledges session termination. The server holds no session
 // state, so this is nominal — a 200 is enough. Bearer auth applies.
 func (s *Server) handleMCPDelete(w http.ResponseWriter, r *http.Request) {
-	if bearerFrom(r.Header.Get("Authorization")) == "" {
+	if s.auth.EffectiveBearer(r) == "" {
 		writeText(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
