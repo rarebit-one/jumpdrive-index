@@ -12,6 +12,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# voidbind-go is a PRIVATE org module (the offline auth core the fabric embed
+# client authenticates with). GOPRIVATE turns off the module proxy / checksum DB
+# for the org so go fetches it straight from git; each job's "authenticate" step
+# supplies a token git can read it with. Mirrors farcaster / unifi-mcp-go CI.
+env:
+  GOPRIVATE: github.com/rarebit-one/*
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -27,6 +34,11 @@ jobs:
       GOARCH: amd64
     steps:
       - uses: actions/checkout@v7
+      - name: authenticate to private modules
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            "https://github.com/"
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       - run: go vet ./...
@@ -44,6 +56,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: authenticate to private modules
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            "https://github.com/"
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       # -race is non-negotiable: the store's single-writer/reader-pool split is a
@@ -61,6 +78,11 @@ jobs:
           - { goos: darwin, goarch: arm64 }
     steps:
       - uses: actions/checkout@v7
+      - name: authenticate to private modules
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            "https://github.com/"
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       # CGO_ENABLED=0 is load-bearing: the SQLite adapter is pure-Go
@@ -78,6 +100,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: authenticate to private modules
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            "https://github.com/"
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       # The milestone gate: gofmt + vet + CGO-off build + the whole test suite
@@ -107,6 +134,11 @@ jobs:
       JDX_TEST_DATABASE_URL: postgres://jdx:jdx@localhost:5432/jdx_test?sslmode=disable
     steps:
       - uses: actions/checkout@v7
+      - name: authenticate to private modules
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            "https://github.com/"
       - uses: actions/setup-go@v7
         with: { go-version-file: go.mod, cache: true }
       # A silently-skipped gate can pass as green: run the suite verbosely and
