@@ -114,13 +114,22 @@ jobs:
   # Runs the SAME conformance matrix against a real Postgres, so the two storage
   # adapters cannot diverge. The `test`/`acceptance` jobs above run it against
   # SQLite (and the Postgres test self-skips there, JDX_TEST_DATABASE_URL unset).
+  #
+  # Postgres major matrix (rarebit-one/rarebit-sre#376): pg18 is the estate CI
+  # target; pg16 is the PROD FLOOR -- `jumpdrive-index-db` is an App Platform
+  # dev DB on version "16" (.do/app.yaml:159-163). The conformance run is a
+  # single-package test, so the second leg is cheap. Drop pg16 once prod is 18.
   test-postgres:
-    name: conformance (postgres)
+    name: conformance (postgres ${{ matrix.postgres }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [pg18, pg16]
     services:
       postgres:
-        image: pgvector/pgvector:pg16
+        image: pgvector/pgvector:${{ matrix.postgres }}
         env:
           POSTGRES_USER: jdx
           POSTGRES_PASSWORD: jdx
