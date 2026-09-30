@@ -90,8 +90,14 @@ func run(log *slog.Logger) error {
 
 	var httpOpts []httpapi.Option
 	if cfg.MCPAuthMode == "voidbind" {
+		// The op log is opened (and proven writable) before serving: a remove
+		// that cannot be recorded must stop the boot, not silently not stick.
+		membership, err := mcpauth.OpenMembership(cfg.MCPVoidbindMembershipDir)
+		if err != nil {
+			return fmt.Errorf("voidbind membership log: %w", err)
+		}
 		httpOpts = append(httpOpts, httpapi.WithAuthorizer(
-			mcpauth.NewVoidbind(mcpauth.PinnedUsersFromFile(cfg.MCPVoidbindTrustFile)),
+			mcpauth.NewVoidbind(mcpauth.PinnedUsersFromFile(cfg.MCPVoidbindTrustFile), membership),
 		))
 	}
 	srv := httpapi.New(mcp.New(service.New(st, am, em)), log, httpOpts...)

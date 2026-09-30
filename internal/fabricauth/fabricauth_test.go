@@ -22,7 +22,7 @@ func TestEmptyDirDisablesVoidbind(t *testing.T) {
 
 // TestProvisionedDirYieldsClient proves that a device dir yields a real client
 // (the Device-credential transport). The credential wire behaviour itself is
-// proven in voidbind-go/deviceclient against the actual rp verifier; here we only
+// proven in void-which-binds-go/deviceclient against the actual rp verifier; here we only
 // assert the wiring produces a usable, timeout-configured client.
 func TestProvisionedDirYieldsClient(t *testing.T) {
 	c, err := fabricauth.Client(t.TempDir(), 42*time.Second)

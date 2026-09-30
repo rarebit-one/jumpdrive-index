@@ -53,3 +53,24 @@ func TestHeyarrTokenWithoutURLIsRejected(t *testing.T) {
 		t.Errorf("error should name JDX_HEYARR_TOKEN, got %v", err)
 	}
 }
+
+func TestVoidbindMembershipDir(t *testing.T) {
+	base := map[string]string{
+		"JDX_MCP_AUTH_MODE":           "voidbind",
+		"JDX_MCP_VOIDBIND_TRUST_FILE": "/etc/starchart/pinned-users",
+	}
+	c, err := config.Load(env(base))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MCPVoidbindMembershipDir != "jumpdrive-index-membership" {
+		t.Errorf("default MCPVoidbindMembershipDir = %q", c.MCPVoidbindMembershipDir)
+	}
+	base["JDX_MCP_VOIDBIND_MEMBERSHIP_DIR"] = "/var/lib/starchart/voidbind-membership"
+	if c, err = config.Load(env(base)); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MCPVoidbindMembershipDir != "/var/lib/starchart/voidbind-membership" {
+		t.Errorf("MCPVoidbindMembershipDir = %q", c.MCPVoidbindMembershipDir)
+	}
+}
