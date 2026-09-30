@@ -5,15 +5,22 @@
 //   - bearer mode (the default, Bearer): the raw Authorization bearer, unchanged
 //     from before this package existed.
 //   - voidbind mode (Device): the caller presents `Authorization: Device
-//     <cert>~<possession>` (voidbind-go's scheme), verified OFFLINE against a
-//     pinned-users trust root re-read per request; on success the authenticated
-//     USER id (ed25519:<hex>) becomes the effective bearer.
+//     <op>~<possession>` (void-which-binds-go's scheme) plus, optionally, the
+//     membership ops it knows in the rp.MembershipHeader. It is verified OFFLINE
+//     against a pinned-users trust root re-read per request and a durable
+//     membership op log (ADR-0007 of void-which-binds-go); on success the
+//     authenticated USER id (ed25519:<hex>) becomes the effective bearer.
 //
 // Making the verified user id the effective bearer is what keeps the whole
 // bearer-threaded service layer untouched: a voidbind principal is configured
 // with its user public key as its Token, so the existing token→principal lookup
 // resolves it — but only after the cryptographic Device credential has been
 // verified, so the public key alone (no possession proof) authenticates nobody.
+//
+// Capability grants (rp.GrantHeader / rp.LegacyGrantHeader) are deliberately
+// NOT consulted: Starchart's own principal model carries all per-caller
+// authorization (spaces, approver rights), so a grant has nothing to narrow or
+// elevate here.
 package mcpauth
 
 import (
@@ -24,9 +31,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rarebit-one/voidbind-go/enrolment"
-	"github.com/rarebit-one/voidbind-go/identity"
-	"github.com/rarebit-one/voidbind-go/rp"
+	"github.com/rarebit-one/void-which-binds-go/enrolment"
+	"github.com/rarebit-one/void-which-binds-go/identity"
+	"github.com/rarebit-one/void-which-binds-go/rp"
 )
 
 // Authorizer reduces a request to the effective bearer the MCP service will
@@ -54,9 +61,21 @@ type TrustSource func() (rp.MemTrust, error)
 // httpapi.Voidbind and unifi-mcp-go's authn.Voidbind, but reducing to the
 // authenticated user id rather than a capability decision — Starchart's own
 // principal model carries the per-caller authorization (spaces / approver rights).
+//
+// Membership (ADR-0007): a credential is the device's admitting op, and the
+// device must be a CURRENT member of the pinned identity, evaluated over the
+// ops recorded in the durable log plus the ops the request presents. A device
+// a member has removed is refused even though its op is still in date, and
+// because the remove is recorded in the log it stays refused across restarts.
+//
+// Ordering (void-which-binds-go#70): the library's VerifyWithPossession checks
+// the credential in memory, then the possession proof, and only then commits
+// the presented ops. A replayed public credential without the device key
+// therefore teaches the log nothing.
 type Voidbind struct {
-	trust TrustSource
-	now   func() time.Time
+	trust      TrustSource
+	membership rp.Membership
+	now        func() time.Time
 }
 
 // VoidbindOption configures a Voidbind authorizer.
@@ -71,9 +90,10 @@ func WithClock(now func() time.Time) VoidbindOption {
 	}
 }
 
-// NewVoidbind builds the authorizer over a trust source.
-func NewVoidbind(trust TrustSource, opts ...VoidbindOption) *Voidbind {
-	v := &Voidbind{trust: trust, now: time.Now}
+// NewVoidbind builds the authorizer over a trust source and a membership op log
+// (OpenMembership in production). A nil membership fails every request closed.
+func NewVoidbind(trust TrustSource, membership rp.Membership, opts ...VoidbindOption) *Voidbind {
+	v := &Voidbind{trust: trust, membership: membership, now: time.Now}
 	for _, opt := range opts {
 		opt(v)
 	}
@@ -82,9 +102,10 @@ func NewVoidbind(trust TrustSource, opts ...VoidbindOption) *Voidbind {
 
 // EffectiveBearer verifies the Device credential and returns the authenticated
 // user id (ed25519:<hex>) to use as the caller's principal token, or "" for any
-// failure — missing header, wrong scheme, un-pinned user, bad signature, expired
-// cert, bad possession proof. Which half failed is never disclosed (that is
-// reconnaissance); the caller sees only "no valid caller".
+// failure — missing header, wrong scheme, un-pinned user, removed or unadmitted
+// device, bad signature, expired op, bad possession proof, too many presented
+// ops, an unreadable or unwritable op log. Which check failed is never
+// disclosed (that is reconnaissance); the caller sees only "no valid caller".
 func (v *Voidbind) EffectiveBearer(r *http.Request) string {
 	cred, ok := deviceCredential(r.Header.Get("Authorization"))
 	if !ok {
@@ -96,23 +117,44 @@ func (v *Voidbind) EffectiveBearer(r *http.Request) string {
 	if err != nil || trust == nil {
 		return ""
 	}
-	now := v.now()
-	certToken, proof, ok := strings.Cut(cred, enrolment.CredentialSeparator)
-	if !ok || certToken == "" || proof == "" {
+	credential, proof, ok := strings.Cut(cred, enrolment.CredentialSeparator)
+	if !ok || credential == "" || proof == "" {
 		return ""
 	}
-	auth, err := (rp.Verifier{Trust: trust}).Verify(certToken, now)
+	// The membership ops the device presents beside its credential; more than
+	// rp.MaxPresentedOps is refused before anything is verified.
+	presented, err := rp.ParseMembershipHeader(r.Header.Get(rp.MembershipHeader))
 	if err != nil {
 		return ""
 	}
-	devicePub, err := identity.ParsePublicKey(auth.DeviceKey)
+	// Check in memory → possession → Commit. A failed proof (or a log that
+	// cannot be written) returns an error and persists nothing.
+	auth, err := (rp.Verifier{Trust: trust, Membership: v.membership}).
+		VerifyWithPossession(credential, proof, presented, v.now())
 	if err != nil {
-		return ""
-	}
-	if err := enrolment.VerifyPossession(proof, devicePub, certToken, now); err != nil {
 		return ""
 	}
 	return auth.UserID
+}
+
+// OpenMembership opens (creating, 0700) the durable membership op log under dir
+// and proves it is writable now, so a misconfigured path fails at startup
+// rather than refusing every caller at request time.
+func OpenMembership(dir string) (*rp.FileMembership, error) {
+	m, err := rp.NewFileMembership(dir)
+	if err != nil {
+		return nil, fmt.Errorf("mcpauth membership: %w", err)
+	}
+	probe, err := os.CreateTemp(dir, ".probe-*")
+	if err != nil {
+		return nil, fmt.Errorf("mcpauth membership: %s is not writable: %w", dir, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	if err := os.Remove(name); err != nil {
+		return nil, fmt.Errorf("mcpauth membership: cleaning probe in %s: %w", dir, err)
+	}
+	return m, nil
 }
 
 // PinnedUsersFromFile returns a TrustSource that RE-READS a file of pinned user

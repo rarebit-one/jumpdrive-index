@@ -12,10 +12,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# voidbind-go is a PRIVATE org module (the offline auth core the fabric embed
-# client authenticates with). GOPRIVATE turns off the module proxy / checksum DB
-# for the org so go fetches it straight from git; each job's "authenticate" step
-# supplies a token git can read it with. Mirrors farcaster / unifi-mcp-go CI.
+# void-which-binds-go is a PRIVATE org module (the offline auth core the fabric
+# embed client and the /mcp Device verifier authenticate with). GOPRIVATE turns
+# off the module proxy / checksum DB for the org so go fetches it straight from
+# git; each job's "authenticate" step supplies a token git can read it with.
+# Mirrors farcaster / unifi-mcp-go CI.
 env:
   GOPRIVATE: github.com/rarebit-one/*
 

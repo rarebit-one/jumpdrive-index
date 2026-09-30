@@ -1,9 +1,10 @@
 // Package fabricauth builds the HTTP client Starchart uses to authenticate to the
 // TechnoCore switchboard (Farcaster) with Voidbind's Device credential scheme,
 // instead of a shared bearer. When the fabric runs FARCASTER_AUTH_MODE=voidbind,
-// every caller must present `Authorization: Device <cert>~<possession>` — a fresh
-// possession proof per request — which is exactly what voidbind-go's deviceclient
-// RoundTripper does over an enrolled device.Store.
+// every caller must present `Authorization: Device <op>~<possession>` — a fresh
+// possession proof per request, plus the membership ops the device knows — which
+// is exactly what void-which-binds-go's deviceclient RoundTripper does over an
+// enrolled device.Store.
 //
 // Both fabric clients (the embedder and the ingest transcriber) accept an
 // injectable http client, so wiring is a one-liner at construction: when a device
@@ -15,14 +16,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/rarebit-one/voidbind-go/device"
-	"github.com/rarebit-one/voidbind-go/deviceclient"
+	"github.com/rarebit-one/void-which-binds-go/device"
+	"github.com/rarebit-one/void-which-binds-go/deviceclient"
 )
 
 // Client returns an *http.Client that stamps a Voidbind Device credential on
 // every request, loading Starchart's device identity from dir (a device store
-// previously provisioned with `voidbind device generate` + `voidbind identity
-// enrol`). timeout sets the client timeout.
+// previously provisioned with `void-which-binds device generate` +
+// `void-which-binds identity enrol`). timeout sets the client timeout.
 //
 // When dir is empty it returns (nil, nil): Voidbind is not configured, so the
 // caller keeps its existing bearer/default client. An error is returned only when

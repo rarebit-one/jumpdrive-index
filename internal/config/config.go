@@ -67,8 +67,9 @@ type Config struct {
 
 	// MCPAuthMode selects how /mcp callers authenticate: "bearer" (the default —
 	// identical to before this field existed) resolves a shared bearer to a
-	// principal; "voidbind" requires `Authorization: Device <cert>~<possession>`
-	// verified offline against MCPVoidbindTrustFile, and the authenticated user
+	// principal; "voidbind" requires `Authorization: Device <op>~<possession>`
+	// verified offline against MCPVoidbindTrustFile and the membership op log in
+	// MCPVoidbindMembershipDir, and the authenticated user
 	// id becomes the effective bearer (a voidbind principal sets its Token to its
 	// user public key).
 	MCPAuthMode string
@@ -76,6 +77,13 @@ type Config struct {
 	// key per line), re-read per request so un-pinning revokes immediately.
 	// REQUIRED when MCPAuthMode is "voidbind".
 	MCPVoidbindTrustFile string
+	// MCPVoidbindMembershipDir is the durable membership op log (one append-only
+	// file per pinned identity). It is what makes a device REMOVAL stick across
+	// restarts, so it must be writable, persistent state — opened at startup,
+	// which fails if it cannot be. Defaults to "jumpdrive-index-membership"
+	// relative to the working directory (like the SQLite default path); set it
+	// under the service's state directory in a real deploy.
+	MCPVoidbindMembershipDir string
 
 	// Thresholds are the resolve vector bands (validated: AutoMerge > Review).
 	Thresholds domain.Thresholds
@@ -103,14 +111,15 @@ func Load(getenv func(string) string) (*Config, error) {
 
 	var errs []error
 	c := &Config{
-		DSN:                  getenv("JDX_DSN"),
-		PrincipalsFile:       getenv("JDX_PRINCIPALS_FILE"),
-		JumpdriveURL:         getenv("JDX_JUMPDRIVE_URL"),
-		HTTPAddr:             get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
-		MCPAuthMode:          strings.ToLower(get("JDX_MCP_AUTH_MODE", "bearer")),
-		MCPVoidbindTrustFile: getenv("JDX_MCP_VOIDBIND_TRUST_FILE"),
-		HeyarrURL:            getenv("JDX_HEYARR_URL"),
-		HeyarrToken:          secret.Value(getenv("JDX_HEYARR_TOKEN")),
+		DSN:                      getenv("JDX_DSN"),
+		PrincipalsFile:           getenv("JDX_PRINCIPALS_FILE"),
+		JumpdriveURL:             getenv("JDX_JUMPDRIVE_URL"),
+		HTTPAddr:                 get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
+		MCPAuthMode:              strings.ToLower(get("JDX_MCP_AUTH_MODE", "bearer")),
+		MCPVoidbindTrustFile:     getenv("JDX_MCP_VOIDBIND_TRUST_FILE"),
+		MCPVoidbindMembershipDir: get("JDX_MCP_VOIDBIND_MEMBERSHIP_DIR", "jumpdrive-index-membership"),
+		HeyarrURL:                getenv("JDX_HEYARR_URL"),
+		HeyarrToken:              secret.Value(getenv("JDX_HEYARR_TOKEN")),
 		Thresholds: domain.Thresholds{
 			AutoMerge: 0.94,
 			Review:    0.86,
