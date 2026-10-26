@@ -81,14 +81,22 @@ services:
         scope: RUN_TIME
         value: "true"
 
-      # Identity: delegate to a Jumpdrive authorizer for the hosted deploy. The
-      # URL is plain config; the shared secret is set OUT OF BAND (see below).
+      # Identity: per-caller credentials minted by the Jumpdrive control plane
+      # (jumpdrive-web#748). JDX_JUMPDRIVE_URL is the control plane's index route;
+      # the index fetches <url>/jwks.json and POSTs <url>/authorize. The `iss`
+      # it requires defaults to the URL minus /internal/index (override with
+      # JDX_JUMPDRIVE_ISSUER). VERIFY=dual checks both and enforces the
+      # intersection during rollout; switch to jwks once the mismatch log has
+      # been clean. The service secret is set OUT OF BAND (see below).
       - key: JDX_IDENTITY
         scope: RUN_TIME
         value: jumpdrive
       - key: JDX_JUMPDRIVE_URL
         scope: RUN_TIME
-        value: https://jumpdrive.example.com   # placeholder — set to the real authorizer
+        value: https://jumpdrive.example.com/internal/index   # placeholder — the console host
+      - key: JDX_JUMPDRIVE_VERIFY
+        scope: RUN_TIME
+        value: dual
 
       # ── Values are set OUT OF BAND, never here ────────────────────────────────
       # Declared so the shape is reviewable; a value in this file would be a secret

@@ -55,8 +55,8 @@ func New(st store.Store, am access.Model, em embed.Embedder) *Service {
 
 // auth authenticates a bearer and returns the decision plus the derived read
 // filter. A failed authentication is ErrUnauthenticated (deny-by-default).
-func (s *Service) auth(bearer string) (access.Decision, access.Filter, error) {
-	d, err := s.access.Authenticate(bearer)
+func (s *Service) auth(ctx context.Context, bearer string) (access.Decision, access.Filter, error) {
+	d, err := s.access.Authenticate(ctx, bearer)
 	if err != nil {
 		return access.Decision{}, access.Filter{}, fmt.Errorf("%w: %w", ErrUnauthenticated, err)
 	}
@@ -67,7 +67,7 @@ func (s *Service) auth(bearer string) (access.Decision, access.Filter, error) {
 
 // GetEntity returns an entity if the caller may see it.
 func (s *Service) GetEntity(ctx context.Context, bearer string, id domain.EntityID) (domain.Entity, error) {
-	_, af, err := s.auth(bearer)
+	_, af, err := s.auth(ctx, bearer)
 	if err != nil {
 		return domain.Entity{}, err
 	}
@@ -76,7 +76,7 @@ func (s *Service) GetEntity(ctx context.Context, bearer string, id domain.Entity
 
 // ResolveByExternalID returns the access-visible entities carrying any of keys.
 func (s *Service) ResolveByExternalID(ctx context.Context, bearer string, keys []string) ([]domain.Entity, error) {
-	_, af, err := s.auth(bearer)
+	_, af, err := s.auth(ctx, bearer)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +85,7 @@ func (s *Service) ResolveByExternalID(ctx context.Context, bearer string, keys [
 
 // Neighbors traverses outward from a start entity, access-filtered at every hop.
 func (s *Service) Neighbors(ctx context.Context, bearer string, q store.NeighborQuery) (store.Subgraph, error) {
-	_, af, err := s.auth(bearer)
+	_, af, err := s.auth(ctx, bearer)
 	if err != nil {
 		return store.Subgraph{}, err
 	}
@@ -104,7 +104,7 @@ type SearchQuery struct {
 // by reciprocal-rank fusion. It degrades to full-text alone if the embedder or
 // the store's semantic/full-text capability is unavailable.
 func (s *Service) Search(ctx context.Context, bearer string, q SearchQuery) ([]store.ScoredEntity, error) {
-	_, af, err := s.auth(bearer)
+	_, af, err := s.auth(ctx, bearer)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +179,7 @@ type CreateEntityInput struct {
 
 // CreateEntity asserts an entity into a space the caller may write to.
 func (s *Service) CreateEntity(ctx context.Context, bearer string, in CreateEntityInput) (store.ResolveResult, error) {
-	d, _, err := s.auth(bearer)
+	d, _, err := s.auth(ctx, bearer)
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
@@ -202,7 +202,7 @@ type LinkInput struct {
 // Link asserts an edge in a space the caller may write to, between two entities
 // the caller may read.
 func (s *Service) Link(ctx context.Context, bearer string, in LinkInput) (domain.Edge, error) {
-	d, af, err := s.auth(bearer)
+	d, af, err := s.auth(ctx, bearer)
 	if err != nil {
 		return domain.Edge{}, err
 	}
@@ -239,7 +239,7 @@ func (s *Service) authorizeLink(ctx context.Context, d access.Decision, af acces
 // to write into the target space (a read-only caller cannot queue writes for an
 // approver); the assertion is not projected until approved.
 func (s *Service) ProposeEntity(ctx context.Context, bearer string, in CreateEntityInput) (store.ProposalID, error) {
-	d, _, err := s.auth(bearer)
+	d, _, err := s.auth(ctx, bearer)
 	if err != nil {
 		return "", err
 	}
@@ -258,7 +258,7 @@ func (s *Service) ProposeEntity(ctx context.Context, bearer string, in CreateEnt
 // ProposeLink holds an edge assertion for approval, under the same gate as Link
 // (write access to the space, both endpoints readable).
 func (s *Service) ProposeLink(ctx context.Context, bearer string, in LinkInput) (store.ProposalID, error) {
-	d, af, err := s.auth(bearer)
+	d, af, err := s.auth(ctx, bearer)
 	if err != nil {
 		return "", err
 	}
@@ -277,7 +277,7 @@ func (s *Service) ProposeLink(ctx context.Context, bearer string, in LinkInput) 
 // DecideProposal approves or rejects a proposal. The caller must have approve
 // rights in the proposal's space.
 func (s *Service) DecideProposal(ctx context.Context, bearer string, id store.ProposalID, approve bool) (store.ResolveResult, error) {
-	d, _, err := s.auth(bearer)
+	d, _, err := s.auth(ctx, bearer)
 	if err != nil {
 		return store.ResolveResult{}, err
 	}
@@ -294,7 +294,7 @@ func (s *Service) DecideProposal(ctx context.Context, bearer string, id store.Pr
 // ListProposals lists pending proposals the caller may approve (space-scoped when
 // filter.Space is set).
 func (s *Service) ListProposals(ctx context.Context, bearer string, f store.ProposalFilter) ([]store.Proposal, error) {
-	d, _, err := s.auth(bearer)
+	d, _, err := s.auth(ctx, bearer)
 	if err != nil {
 		return nil, err
 	}

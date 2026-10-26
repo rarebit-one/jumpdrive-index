@@ -12,6 +12,7 @@
 package starchart
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -92,7 +93,7 @@ func tokenDigest(tok string) string {
 // Authenticate resolves a bearer token to a Decision, or ErrUnauthenticated.
 // Starchart principals write wherever they read (WriteSpaces == Spaces); their
 // approver spaces come from the registry.
-func (m *Model) Authenticate(bearer string) (access.Decision, error) {
+func (m *Model) Authenticate(_ context.Context, bearer string) (access.Decision, error) {
 	if bearer == "" {
 		return access.Decision{}, ErrUnauthenticated
 	}

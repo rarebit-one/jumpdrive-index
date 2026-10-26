@@ -1,6 +1,7 @@
 package starchart_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -27,7 +28,7 @@ func newModel(t *testing.T) *starchart.Model {
 
 func mustAuth(t *testing.T, m *starchart.Model, tok string) access.Decision {
 	t.Helper()
-	d, err := m.Authenticate(tok)
+	d, err := m.Authenticate(context.Background(), tok)
 	if err != nil {
 		t.Fatalf("Authenticate(%q): %v", tok, err)
 	}
@@ -40,7 +41,7 @@ func TestAuthenticate(t *testing.T) {
 		t.Errorf("id = %q, want kate", d.Principal.ID)
 	}
 	for _, tok := range []string{"", "unknown-tok"} {
-		if _, err := m.Authenticate(tok); !errors.Is(err, starchart.ErrUnauthenticated) {
+		if _, err := m.Authenticate(context.Background(), tok); !errors.Is(err, starchart.ErrUnauthenticated) {
 			t.Errorf("Authenticate(%q) err = %v, want ErrUnauthenticated", tok, err)
 		}
 	}
