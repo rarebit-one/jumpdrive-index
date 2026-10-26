@@ -17,8 +17,8 @@ unchanged with them.
 
 - Repo: `github.com/rarebit-one/jumpdrive-web`
 - Path: `control-plane/spec/fixtures/index_authorize_contract/`
-- Commit: **`c5915a5f`** (`origin/main`; the fixtures last changed in `9cfa9fb7`,
-  `feat(index): /internal/index/authorize + jwks.json, dark (#748, 2/3) (#1023)`)
+- Commit: **`051fdc56`** (`origin/main`; the fixtures last changed there,
+  `fix(spec): authorize-response fixture's expires_at is the credential's exp (#1040) (#1043)`)
 - Design: jumpdrive-web `docs/index-principal-adr.md`, Decisions 2 and 3
   (ratified in jumpdrive-web#999).
 - Control-plane gates: `spec/services/index_authorize_contract_spec.rb`
