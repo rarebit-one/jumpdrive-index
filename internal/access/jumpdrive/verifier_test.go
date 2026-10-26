@@ -243,6 +243,25 @@ func TestJWKSKidMissRefetchIsRateLimited(t *testing.T) {
 	}
 }
 
+// A caller that cancels while triggering the cold-cache fetch must not leave
+// every other caller locked out for the cooldown.
+func TestJWKSFetchSurvivesCallerCancellation(t *testing.T) {
+	clk := newClock()
+	k := newTestKey(t, "kid-1")
+	js := newJWKSServer(t, k.jwk(t))
+	v := newVerifier(t, js, clk)
+
+	gone, cancel := context.WithCancel(bg)
+	cancel()
+	_, _ = v.Verify(gone, k.mint(t, clk.Now(), nil))
+	if _, err := v.Verify(bg, k.mint(t, clk.Now(), nil)); err != nil {
+		t.Errorf("Verify after a cancelled caller's fetch, inside the cooldown: %v", err)
+	}
+	if n := js.fetches(); n != 1 {
+		t.Errorf("fetches = %d, want 1", n)
+	}
+}
+
 func TestJWKSOutageServesCacheAndFailsClosed(t *testing.T) {
 	clk := newClock()
 	k1, k2 := newTestKey(t, "kid-1"), newTestKey(t, "kid-2")

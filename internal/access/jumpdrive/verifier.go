@@ -279,6 +279,9 @@ func (v *Verifier) key(ctx context.Context, kid string) (*ecdsa.PublicKey, error
 	return k, nil
 }
 
+// jwksFetchTimeout bounds a JWKS fetch independently of the triggering request.
+const jwksFetchTimeout = 5 * time.Second
+
 // refetch fetches the JWKS unless an attempt was made within the rate limit. A
 // failed fetch keeps the cached keys (outage tolerance) and is logged.
 func (v *Verifier) refetch(ctx context.Context, kidMiss bool) {
@@ -294,7 +297,12 @@ func (v *Verifier) refetch(ctx context.Context, kidMiss bool) {
 	v.triedAt = v.now()
 	v.mu.Unlock()
 
-	keys, err := v.fetch(ctx)
+	// The fetch serves every caller and sets the shared cooldown, so it must not
+	// die with the caller that happened to trigger it: detach from its
+	// cancellation and bound it on its own.
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), jwksFetchTimeout)
+	defer cancel()
+	keys, err := v.fetch(fctx)
 	if err != nil {
 		v.log.Warn("jumpdrive: JWKS fetch failed; serving cached keys", "url", v.jwksURL, "kid_miss", kidMiss, "err", err)
 		return

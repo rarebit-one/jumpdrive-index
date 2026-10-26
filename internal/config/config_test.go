@@ -155,12 +155,13 @@ func TestJumpdriveRequiresSecretAndURL(t *testing.T) {
 }
 
 func TestJumpdriveIssuer(t *testing.T) {
-	// Explicit wins over derived; a trailing slash is normalised.
+	// Explicit wins over derived and is kept verbatim: iss is compared exactly,
+	// so a trailing slash the control plane issues must survive.
 	c, err := config.Load(env(jumpdriveEnv(map[string]string{"JDX_JUMPDRIVE_ISSUER": "https://jumpdrive.app/"})))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.JumpdriveIssuer != "https://jumpdrive.app" {
+	if c.JumpdriveIssuer != "https://jumpdrive.app/" {
 		t.Errorf("JumpdriveIssuer = %q", c.JumpdriveIssuer)
 	}
 	// A URL that is not the standard route cannot imply an issuer.

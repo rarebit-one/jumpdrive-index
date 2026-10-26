@@ -147,7 +147,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		PrincipalsFile:           getenv("JDX_PRINCIPALS_FILE"),
 		JumpdriveURL:             strings.TrimRight(getenv("JDX_JUMPDRIVE_URL"), "/"),
 		JumpdriveSecret:          secret.Value(getenv("JDX_JUMPDRIVE_SECRET")),
-		JumpdriveIssuer:          strings.TrimRight(getenv("JDX_JUMPDRIVE_ISSUER"), "/"),
+		JumpdriveIssuer:          getenv("JDX_JUMPDRIVE_ISSUER"), // verbatim: iss is compared exactly
 		HTTPAddr:                 get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
 		MCPAuthMode:              strings.ToLower(get("JDX_MCP_AUTH_MODE", "bearer")),
 		MCPVoidbindTrustFile:     getenv("JDX_MCP_VOIDBIND_TRUST_FILE"),
