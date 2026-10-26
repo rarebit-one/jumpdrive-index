@@ -1,0 +1,82 @@
+name: publish-image
+
+# Publishes ghcr.io/rarebit-one/jumpdrive-index for self-hosted deploys: today the
+# STAGING index on hyperion-2 (thesim-family/homelab-ops roles/jumpdrive-index-staging.nix,
+# jumpdrive-web#748 Phase 3), which pins an image BY DIGEST and bumps it by PR. The
+# hosted production app still builds from source on App Platform (.do/app.yaml).
+#
+# Tags: sha-<full sha> (immutable) and main (moving, convenience only; deploys pin the
+# digest printed in the job summary). The binary is built on the runner, because the
+# private void-which-binds-go module needs the same git auth ci.yml uses and an image
+# build must not carry that token; deploy/ghcr/Dockerfile only packages it.
+#
+# Keep the package PRIVATE: the binary embeds the private void-which-binds-go module.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "deploy/ghcr/**"
+      - ".github/workflows/publish-image.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOPRIVATE: github.com/rarebit-one/*
+  IMAGE: ghcr.io/rarebit-one/jumpdrive-index
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: authenticate to private modules
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
+            "https://github.com/"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with: { go-version-file: go.mod, cache: true }
+      - name: build the static linux/amd64 binary
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" -o dist/jumpdrive-index ./cmd/jumpdrive-index
+      - name: log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: build and push
+        run: |
+          set -euo pipefail
+          docker build -f deploy/ghcr/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=AGPL-3.0-or-later" \
+            -t "${IMAGE}:sha-${GITHUB_SHA}" -t "${IMAGE}:main" dist
+          docker push "${IMAGE}:sha-${GITHUB_SHA}"
+          docker push "${IMAGE}:main"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:sha-${GITHUB_SHA}")
+          echo "pinned ref: ${digest}"
+          {
+            echo "### ${IMAGE}"
+            echo
+            echo "Pin this in homelab-ops (\`jumpdriveIndexImage\`):"
+            echo
+            echo "\`${digest}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
