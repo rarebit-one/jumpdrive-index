@@ -75,6 +75,14 @@ type Config struct {
 	// PrincipalsFile is a JSON file describing the starchart access model
 	// (principals + restricted deny-types). Used when IdentityMode=starchart.
 	PrincipalsFile string
+	// LegacyStarchart (JDX_LEGACY_STARCHART=1) is the temporary cutover escape
+	// hatch that lets a Postgres serve run the starchart identity model. Without
+	// it that combination is refused: starchart's static shared principals are
+	// the homelab (SQLite) identity model, and the hosted index takes per-caller
+	// identity (jumpdrive-web docs/index-principal-adr.md, Decision 5.6). It is
+	// deleted with the composite model at the end of the rollout.
+	LegacyStarchart bool
+
 	// JumpdriveURL is the control plane's index route, <console>/internal/index
 	// (the model appends /authorize and /jwks.json). Used when
 	// IdentityMode=jumpdrive.
@@ -190,6 +198,15 @@ func Load(getenv func(string) string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("JDX_AUTH: unrecognised %q (want 1|0|true|false)", v))
 	}
 
+	// LegacyStarchart: strict like JDX_AUTH, defaulting off.
+	switch v := strings.ToLower(get("JDX_LEGACY_STARCHART", "false")); v {
+	case "1", "true":
+		c.LegacyStarchart = true
+	case "0", "false":
+	default:
+		errs = append(errs, fmt.Errorf("JDX_LEGACY_STARCHART: unrecognised %q (want 1|0|true|false)", v))
+	}
+
 	// MCPAuthMode: a closed set, default-deny on anything else; voidbind needs a
 	// pinned-users file to have anyone to admit.
 	switch c.MCPAuthMode {
@@ -221,6 +238,14 @@ func Load(getenv func(string) string) (*Config, error) {
 	}
 	if c.Mode == ModeServe && c.IdentityMode == IdentityJumpdrive {
 		errs = append(errs, c.validateJumpdrive()...)
+	}
+	// Starchart is retired for hosted serving: a Postgres serve with the static
+	// shared principal is refused unless the cutover escape hatch is set. Migrate
+	// builds no access model, so it is exempt (its job declares no identity).
+	if c.Mode == ModeServe && c.Backend == BackendPostgres && c.IdentityMode == IdentityStarchart && !c.LegacyStarchart {
+		errs = append(errs, errors.New(
+			"JDX_IDENTITY: starchart is the homelab (sqlite) identity model; refusing it with JDX_BACKEND=postgres "+
+				"(use JDX_IDENTITY=jumpdrive, or set JDX_LEGACY_STARCHART=1 for the cutover window)"))
 	}
 	// A heyarr token armed with no endpoint is a misconfiguration, not a silent
 	// no-op — the credential would never be sent, so fail loud (default-deny).

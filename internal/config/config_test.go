@@ -179,3 +179,58 @@ func TestJumpdriveIssuer(t *testing.T) {
 		t.Errorf("authorize with no issuer: %v", err)
 	}
 }
+
+func TestPostgresRefusesStarchartUnlessLegacy(t *testing.T) {
+	pg := map[string]string{"JDX_BACKEND": "postgres", "JDX_DSN": "postgres://x@db/jdx"}
+	with := func(edits map[string]string) map[string]string {
+		m := map[string]string{}
+		for k, v := range pg {
+			m[k] = v
+		}
+		for k, v := range edits {
+			m[k] = v
+		}
+		return m
+	}
+
+	// starchart is the identity default, so a bare postgres serve is refused.
+	for name, e := range map[string]map[string]string{
+		"default identity":   with(nil),
+		"explicit starchart": with(map[string]string{"JDX_IDENTITY": "starchart"}),
+		"legacy off":         with(map[string]string{"JDX_LEGACY_STARCHART": "0"}),
+	} {
+		if _, err := config.Load(env(e)); err == nil || !strings.Contains(err.Error(), "JDX_LEGACY_STARCHART") {
+			t.Errorf("%s: err=%v, want the starchart+postgres refusal", name, err)
+		}
+	}
+
+	// The cutover escape hatch admits it.
+	for _, v := range []string{"1", "true", "TRUE"} {
+		c, err := config.Load(env(with(map[string]string{"JDX_LEGACY_STARCHART": v})))
+		if err != nil {
+			t.Errorf("JDX_LEGACY_STARCHART=%s: %v", v, err)
+			continue
+		}
+		if !c.LegacyStarchart || c.IdentityMode != config.IdentityStarchart {
+			t.Errorf("JDX_LEGACY_STARCHART=%s: legacy=%v identity=%q", v, c.LegacyStarchart, c.IdentityMode)
+		}
+	}
+	if _, err := config.Load(env(with(map[string]string{"JDX_LEGACY_STARCHART": "yes"}))); err == nil ||
+		!strings.Contains(err.Error(), "JDX_LEGACY_STARCHART: unrecognised") {
+		t.Errorf("JDX_LEGACY_STARCHART=yes: err=%v, want a default-deny parse error", err)
+	}
+
+	// Migrate builds no access model (the hosted migrate job declares no
+	// identity), so it is exempt.
+	if _, err := config.Load(env(with(map[string]string{"JDX_MODE": "migrate"}))); err != nil {
+		t.Errorf("postgres migrate: %v", err)
+	}
+	// Starchart stays the sqlite (homelab) default, and postgres + jumpdrive is
+	// the hosted shape.
+	if _, err := config.Load(env(map[string]string{"JDX_IDENTITY": "starchart"})); err != nil {
+		t.Errorf("sqlite + starchart: %v", err)
+	}
+	if _, err := config.Load(env(jumpdriveEnv(pg))); err != nil {
+		t.Errorf("postgres + jumpdrive: %v", err)
+	}
+}

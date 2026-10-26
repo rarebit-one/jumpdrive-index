@@ -67,6 +67,14 @@ the end state). `JDX_JUMPDRIVE_ISSUER` is optional: it defaults to
 `JUMPDRIVE_BASE_URL` (the credential's `iss`). `JDX_DSN` is bound to the managed
 database via `${jumpdrive-index-db.DATABASE_URL}` and substituted at deploy time.
 
+> **Starchart is refused on Postgres.** A `serve` with `JDX_BACKEND=postgres` and
+> `JDX_IDENTITY=starchart` (also the identity default) is a boot refusal: the
+> static shared principal is the homelab (SQLite) identity model. A live app still
+> on the shared bearer must set `JDX_LEGACY_STARCHART=1` **before** it deploys a
+> release with this check, and drop it once the cutover to `jumpdrive` is done
+> (jumpdrive-web `docs/index-principal-adr.md`, Decision 5.6). The `migrate` job
+> is exempt: it builds no access model.
+
 > **Auth posture (ADR-0011):** the service binds a routable address on App
 > Platform, so `JDX_AUTH=true` is mandatory — the process refuses to boot
 > unauthenticated on a non-loopback bind.
