@@ -28,7 +28,7 @@ func (s *Store) AppendEdgeFact(ctx context.Context, in store.AppendEdgeInput) (d
 	ed.Provenance = normalizeProvenance(ed.Provenance, s.now())
 	dedupeKey := in.DedupeKey
 	if dedupeKey == "" {
-		dedupeKey = fmt.Sprintf("edge|%s|%s|%s", ed.Predicate, ed.From, ed.To)
+		dedupeKey = store.DefaultEdgeDedupeKey(ed)
 	}
 	ts := s.now()
 

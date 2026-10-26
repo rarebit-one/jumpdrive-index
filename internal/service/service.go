@@ -31,6 +31,14 @@ var (
 	ErrForbidden       = errors.New("service: forbidden")
 )
 
+// errEndpointNotFound is what a link write returns when either endpoint is
+// missing OR exists but is not readable by the caller. The two cases are
+// deliberately indistinguishable (same sentinel, same message, no id), so a
+// link attempt can never be used to probe whether an entity id exists in a space
+// the caller cannot see. It wraps store.ErrNotFound, so surfaces map it like any
+// other not-found.
+var errEndpointNotFound = fmt.Errorf("%w: link endpoint", store.ErrNotFound)
+
 // Service wires an access model to a store, with an optional embedder for
 // semantic search + auto-embedding on write.
 type Service struct {
@@ -191,26 +199,52 @@ type LinkInput struct {
 	DedupeKey  string
 }
 
-// Link asserts an edge in a space the caller may write to.
+// Link asserts an edge in a space the caller may write to, between two entities
+// the caller may read.
 func (s *Service) Link(ctx context.Context, bearer string, in LinkInput) (domain.Edge, error) {
-	d, _, err := s.auth(bearer)
+	d, af, err := s.auth(bearer)
 	if err != nil {
 		return domain.Edge{}, err
 	}
-	if !s.access.CanWrite(d, in.Space) {
-		return domain.Edge{}, fmt.Errorf("%w: no write access to space %q", ErrForbidden, in.Space)
+	if err := s.authorizeLink(ctx, d, af, in); err != nil {
+		return domain.Edge{}, err
 	}
 	return s.store.AppendEdgeFact(ctx, s.edgeInput(d, in))
 }
 
+// authorizeLink is the write gate shared by Link and ProposeLink: the caller
+// must be able to write into the edge's space AND read both endpoints. Without
+// the endpoint check a caller could attach its own edge to an entity in another
+// tenant's space (graph pollution) and learn from the outcome that the id
+// exists. Readability goes through the same SQL access filter as every read, and
+// a missing or unreadable endpoint returns the one errEndpointNotFound.
+func (s *Service) authorizeLink(ctx context.Context, d access.Decision, af access.Filter, in LinkInput) error {
+	if !s.access.CanWrite(d, in.Space) {
+		return fmt.Errorf("%w: no write access to space %q", ErrForbidden, in.Space)
+	}
+	for _, id := range []domain.EntityID{in.From, in.To} {
+		if _, err := s.store.GetEntity(ctx, af, id); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return errEndpointNotFound
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // ---- governed writes (propose → decide) ----
 
-// ProposeEntity holds an entity assertion for approval. Proposing is open to any
-// authenticated caller; the assertion is not projected until approved.
+// ProposeEntity holds an entity assertion for approval. The caller must be able
+// to write into the target space (a read-only caller cannot queue writes for an
+// approver); the assertion is not projected until approved.
 func (s *Service) ProposeEntity(ctx context.Context, bearer string, in CreateEntityInput) (store.ProposalID, error) {
 	d, _, err := s.auth(bearer)
 	if err != nil {
 		return "", err
+	}
+	if !s.access.CanWrite(d, in.Space) {
+		return "", fmt.Errorf("%w: no write access to space %q", ErrForbidden, in.Space)
 	}
 	payload, err := json.Marshal(s.entityInput(d, s.autoEmbed(ctx, in)))
 	if err != nil {
@@ -221,10 +255,14 @@ func (s *Service) ProposeEntity(ctx context.Context, bearer string, in CreateEnt
 	})
 }
 
-// ProposeLink holds an edge assertion for approval.
+// ProposeLink holds an edge assertion for approval, under the same gate as Link
+// (write access to the space, both endpoints readable).
 func (s *Service) ProposeLink(ctx context.Context, bearer string, in LinkInput) (store.ProposalID, error) {
-	d, _, err := s.auth(bearer)
+	d, af, err := s.auth(bearer)
 	if err != nil {
+		return "", err
+	}
+	if err := s.authorizeLink(ctx, d, af, in); err != nil {
 		return "", err
 	}
 	payload, err := json.Marshal(s.edgeInput(d, in))
@@ -280,7 +318,7 @@ func (s *Service) entityInput(d access.Decision, in CreateEntityInput) store.App
 		Candidate: domain.Entity{
 			Type: in.Type, Props: in.Props, ExternalIDs: in.ExternalIDs,
 			Space: in.Space, Owner: d.Principal.ID, Visibility: in.Visibility, Embeddings: in.Embeddings,
-			Provenance: domain.Provenance{Asserter: string(d.Principal.ID), Method: domain.Asserted},
+			Provenance: s.provenance(d),
 		},
 		Writer: domain.WriterID("svc:" + string(d.Principal.ID)), Actor: d.Principal.ID,
 		Policy: in.Policy, DedupeKey: in.DedupeKey,
@@ -292,10 +330,17 @@ func (s *Service) edgeInput(d access.Decision, in LinkInput) store.AppendEdgeInp
 		Edge: domain.Edge{
 			Predicate: in.Predicate, From: in.From, To: in.To, Props: in.Props,
 			Space: in.Space, Owner: d.Principal.ID, Visibility: in.Visibility,
-			Provenance: domain.Provenance{Asserter: string(d.Principal.ID), Method: domain.Asserted},
+			Provenance: s.provenance(d),
 		},
 		Writer: domain.WriterID("svc:" + string(d.Principal.ID)), Actor: d.Principal.ID, DedupeKey: in.DedupeKey,
 	}
+}
+
+// provenance is the provenance every write under d records: the authenticated
+// principal as asserter, and the decision's request trace (for jumpdrive, the
+// org, workspace and credential jti) as source.
+func (s *Service) provenance(d access.Decision) domain.Provenance {
+	return domain.Provenance{Asserter: string(d.Principal.ID), Method: domain.Asserted, Source: d.Source}
 }
 
 // proposalSpace finds a pending proposal's space (for the approve check).

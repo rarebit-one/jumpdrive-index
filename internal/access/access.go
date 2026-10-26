@@ -16,10 +16,22 @@ type PrincipalID = domain.PrincipalID
 // Principal is a resolved caller. Restricted marks a principal (e.g. a child
 // account) for whom certain types/spaces are a HARD boundary — enforced in SQL,
 // never as a droppable lens.
+//
+// The three space sets are carried ON THE DECISION, never cached per principal:
+// with per-request credentials (jumpdrive: one workspace-bound token per call) the
+// same principal can hold different rights in two concurrent requests, so the
+// answer to CanWrite/CanApprove must come from the request's own decision.
 type Principal struct {
-	ID         PrincipalID
-	Spaces     []domain.SpaceID
-	Restricted bool
+	ID PrincipalID
+	// Spaces is the READ set: what FilterFor pushes into SQL as the space ACL.
+	Spaces []domain.SpaceID
+	// WriteSpaces is where the principal may assert (CanWrite). Empty means
+	// read-only (fail closed).
+	WriteSpaces []domain.SpaceID
+	// ApproverSpaces is where the principal may decide governed writes
+	// (CanApprove). Empty means no approve rights (fail closed).
+	ApproverSpaces []domain.SpaceID
+	Restricted     bool
 }
 
 // Lens is a SOFT, named query-time filter. It can hide (dampen) results but never
@@ -36,6 +48,23 @@ type Lens struct {
 type Decision struct {
 	Principal Principal
 	Lenses    []Lens
+	// Source traces the decision back to the request that produced it (for
+	// jumpdrive: the control-plane org, workspace and credential jti). Every
+	// write made under the decision records it as Provenance.Source, so an edge
+	// can be matched to the audited call. Empty when the identity backend has
+	// nothing to add (starchart).
+	Source string
+}
+
+// ContainsSpace reports whether s is in spaces. It is the membership test every
+// model uses for the read, write and approve sets.
+func ContainsSpace(spaces []domain.SpaceID, s domain.SpaceID) bool {
+	for _, x := range spaces {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Guarded is the SQL-filterable subset of any node or edge — deliberately narrow
