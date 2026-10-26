@@ -16,7 +16,8 @@ import (
 
 var ctx = context.Background()
 
-// kate: writes + approves in "fam". bob: authenticated but no write/approve there.
+// kate: writes + approves in "fam". carl: writes in "fam" but cannot approve.
+// bob: authenticated but no write/approve there.
 func newService(t *testing.T) *service.Service {
 	t.Helper()
 	st, err := sqlite.Open(sqlite.Options{
@@ -33,6 +34,7 @@ func newService(t *testing.T) *service.Service {
 
 	am, err := starchart.New(starchart.Config{Principals: []starchart.PrincipalConfig{
 		{Token: "kate-tok", ID: "kate", Spaces: []domain.SpaceID{"fam"}, ApproverSpaces: []domain.SpaceID{"fam"}},
+		{Token: "carl-tok", ID: "carl", Spaces: []domain.SpaceID{"fam"}},
 		{Token: "bob-tok", ID: "bob"},
 	}})
 	if err != nil {
@@ -212,8 +214,12 @@ func TestLinkAuthorized(t *testing.T) {
 func TestGovernedProposeThenApprove(t *testing.T) {
 	s := newService(t)
 	tmdb := domain.ExternalID{Scheme: "tmdb", Value: "603"}
-	// bob may PROPOSE (open to any authenticated caller) even without write access.
-	pid, err := s.ProposeEntity(ctx, "bob-tok", movie("Proposed", tmdb))
+	// bob has no write access to fam, so he cannot even queue a proposal there.
+	if _, err := s.ProposeEntity(ctx, "bob-tok", movie("Proposed", tmdb)); !errors.Is(err, service.ErrForbidden) {
+		t.Fatalf("bob propose: err=%v, want ErrForbidden", err)
+	}
+	// carl writes to fam but is not an approver: he may PROPOSE.
+	pid, err := s.ProposeEntity(ctx, "carl-tok", movie("Proposed", tmdb))
 	if err != nil {
 		t.Fatalf("propose: %v", err)
 	}
@@ -221,9 +227,11 @@ func TestGovernedProposeThenApprove(t *testing.T) {
 	if hits, _ := s.ResolveByExternalID(ctx, "kate-tok", []string{tmdb.Key()}); len(hits) != 0 {
 		t.Errorf("held proposal must not be projected; found %d", len(hits))
 	}
-	// bob cannot approve (not an approver of fam).
-	if _, err := s.DecideProposal(ctx, "bob-tok", pid, true); !errors.Is(err, service.ErrForbidden) {
-		t.Errorf("bob approve: err=%v, want ErrForbidden", err)
+	// carl and bob cannot approve (not approvers of fam).
+	for _, tok := range []string{"carl-tok", "bob-tok"} {
+		if _, err := s.DecideProposal(ctx, tok, pid, true); !errors.Is(err, service.ErrForbidden) {
+			t.Errorf("%s approve: err=%v, want ErrForbidden", tok, err)
+		}
 	}
 	// kate (approver of fam) can.
 	if _, err := s.DecideProposal(ctx, "kate-tok", pid, true); err != nil {

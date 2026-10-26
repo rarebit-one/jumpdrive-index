@@ -1,0 +1,10 @@
+{
+  "invalid_service_secret": { "status": 401, "body": { "error": "invalid_service_secret" } },
+  "invalid_credential": { "status": 401, "body": { "error": "invalid_credential" } },
+  "account_suspended": { "status": 403, "body": { "error": "account_suspended" } },
+  "organization_suspended": { "status": 403, "body": { "error": "organization_suspended" } },
+  "not_a_member": { "status": 403, "body": { "error": "not_a_member" } },
+  "no_account": { "status": 403, "body": { "error": "no_account" } },
+  "no_workspace": { "status": 403, "body": { "error": "no_workspace" } },
+  "organization_mismatch": { "status": 403, "body": { "error": "organization_mismatch" } }
+}

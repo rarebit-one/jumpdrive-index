@@ -55,13 +55,25 @@ shape, not the values):
 
 | Env | Type | Notes |
 |-----|------|-------|
-| `JDX_JUMPDRIVE_SECRET` | **SECRET** | shared secret for the Jumpdrive authorizer (identity=jumpdrive) |
+| `JDX_JUMPDRIVE_SECRET` | **SECRET**, required | the index→control-plane service bearer for `/authorize`; equals the control plane's `JUMPDRIVE_INDEX_AUTHORIZE_SECRET`. Required with `JDX_IDENTITY=jumpdrive` in every verify mode (boot refusal otherwise) |
 | `JDX_HEYARR_TOKEN` | **SECRET**, optional | only with `JDX_HEYARR_URL`; a token with no URL is a hard boot refusal |
 
 Plain (in-spec) config: `JDX_MODE`, `JDX_BACKEND=postgres`, `JDX_HTTP_ADDR=":8090"`,
-`JDX_AUTH=true`, `JDX_IDENTITY=jumpdrive`, `JDX_JUMPDRIVE_URL` (placeholder — point
-at the real authorizer). `JDX_DSN` is bound to the managed database via
-`${jumpdrive-index-db.DATABASE_URL}` and substituted at deploy time.
+`JDX_AUTH=true`, `JDX_IDENTITY=jumpdrive`, `JDX_JUMPDRIVE_URL` (placeholder — set
+to `https://<console host>/internal/index`), `JDX_JUMPDRIVE_VERIFY`
+(`jwks` | `authorize` | `dual`; the spec ships `dual` for rollout, and `jwks` is
+the end state). `JDX_JUMPDRIVE_ISSUER` is optional: it defaults to
+`JDX_JUMPDRIVE_URL` minus `/internal/index`, and must equal the control plane's
+`JUMPDRIVE_BASE_URL` (the credential's `iss`). `JDX_DSN` is bound to the managed
+database via `${jumpdrive-index-db.DATABASE_URL}` and substituted at deploy time.
+
+> **Starchart is refused on Postgres.** A `serve` with `JDX_BACKEND=postgres` and
+> `JDX_IDENTITY=starchart` (also the identity default) is a boot refusal: the
+> static shared principal is the homelab (SQLite) identity model. A live app still
+> on the shared bearer must set `JDX_LEGACY_STARCHART=1` **before** it deploys a
+> release with this check, and drop it once the cutover to `jumpdrive` is done
+> (jumpdrive-web `docs/index-principal-adr.md`, Decision 5.6). The `migrate` job
+> is exempt: it builds no access model.
 
 > **Auth posture (ADR-0011):** the service binds a routable address on App
 > Platform, so `JDX_AUTH=true` is mandatory — the process refuses to boot

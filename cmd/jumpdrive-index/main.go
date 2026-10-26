@@ -78,7 +78,7 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("projection head: %w (did you run MODE=migrate?)", err)
 	}
 
-	am, err := buildAccessModel(cfg)
+	am, err := buildAccessModel(cfg, log)
 	if err != nil {
 		return fmt.Errorf("access model: %w", err)
 	}
@@ -105,9 +105,19 @@ func run(log *slog.Logger) error {
 	sigctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log.Info("jumpdrive-index serving",
+	logAttrs := []any{
 		"addr", cfg.HTTPAddr, "backend", cfg.Backend, "identity", cfg.IdentityMode,
-		"auth", cfg.AuthEnabled, "projection_head", head)
+		"auth", cfg.AuthEnabled, "projection_head", head,
+	}
+	if cfg.IdentityMode == config.IdentityJumpdrive {
+		logAttrs = append(logAttrs, "jumpdrive_url", cfg.JumpdriveURL, "jumpdrive_verify", cfg.JumpdriveVerify,
+			"jumpdrive_issuer", cfg.JumpdriveIssuer)
+	}
+	if cfg.LegacyStarchart && cfg.Backend == config.BackendPostgres && cfg.IdentityMode == config.IdentityStarchart {
+		log.Warn("serving postgres with the legacy starchart identity (JDX_LEGACY_STARCHART): a cutover-only " +
+			"escape hatch; move to JDX_IDENTITY=jumpdrive (jumpdrive-web#748)")
+	}
+	log.Info("jumpdrive-index serving", logAttrs...)
 	return srv.Serve(sigctx, cfg.HTTPAddr)
 }
 
@@ -128,7 +138,7 @@ func openStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
 }
 
 // buildAccessModel wires the configured identity seam.
-func buildAccessModel(cfg *config.Config) (access.Model, error) {
+func buildAccessModel(cfg *config.Config, log *slog.Logger) (access.Model, error) {
 	switch cfg.IdentityMode {
 	case config.IdentityStarchart:
 		var scfg starchart.Config
@@ -145,7 +155,10 @@ func buildAccessModel(cfg *config.Config) (access.Model, error) {
 	case config.IdentityJumpdrive:
 		return jumpdrive.New(jumpdrive.Config{
 			BaseURL:      cfg.JumpdriveURL,
-			SharedSecret: os.Getenv("JDX_JUMPDRIVE_SECRET"),
+			SharedSecret: cfg.JumpdriveSecret.Reveal(),
+			Mode:         jumpdrive.VerifyMode(cfg.JumpdriveVerify),
+			Issuer:       cfg.JumpdriveIssuer,
+			Logger:       log,
 		})
 	default:
 		return nil, fmt.Errorf("unknown identity mode %q", cfg.IdentityMode)

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rarebit-one/jumpdrive-index/internal/access"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcpauth"
 )
@@ -103,7 +104,11 @@ func (s *Server) handleMCPPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bearer := s.auth.EffectiveBearer(r)
-	resp := s.mcp.Handle(r.Context(), bearer, body)
+	ctx := r.Context()
+	if id := inboundRequestID(r); id != "" {
+		ctx = access.WithRequestID(ctx, id)
+	}
+	resp := s.mcp.Handle(ctx, bearer, body)
 	if resp == nil { // a notification: no body
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -215,4 +220,21 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 		defer cancel()
 		return srv.Shutdown(shutCtx)
 	}
+}
+
+// inboundRequestID returns the caller's X-Request-Id when it is a plausible id
+// (at most 128 of [A-Za-z0-9._:-]), so the identity backend can propagate it on
+// its own control-plane calls. Anything else is dropped, never forwarded.
+func inboundRequestID(r *http.Request) string {
+	id := r.Header.Get("X-Request-Id")
+	if id == "" || len(id) > 128 {
+		return ""
+	}
+	for _, c := range id {
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == ':' || c == '-'
+		if !ok {
+			return ""
+		}
+	}
+	return id
 }

@@ -14,12 +14,28 @@ updates:
     registries:
       - github-rarebit-one
     schedule: { interval: weekly }
+    cooldown: { default-days: 3, semver-major-days: 7 }
     groups:
       go-dependencies:
+        patterns: ["*"]
+    # Added 2026-10-26: void-which-binds-go v0.19.0 is the ADR-0022 gen2 hard
+    # cutover (refuses every gen1 credential), so relying parties move to it only
+    # at the C2 cutover. Remove this ignore when jumpdrive-index is moved to gen2
+    # at C2. Until then it holds on v0.18.x (patches still flow).
+    ignore:
+      - dependency-name: github.com/rarebit-one/void-which-binds-go
+        versions: [">= 0.19.0"]
+  - package-ecosystem: docker
+    directories: ["/", "/deploy/docker"]
+    schedule: { interval: weekly }
+    cooldown: { default-days: 3, semver-major-days: 7 }
+    groups:
+      docker:
         patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    cooldown: { default-days: 3, semver-major-days: 7 }
     groups:
       actions:
         patterns: ["*"]
