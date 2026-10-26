@@ -105,8 +105,10 @@ func run(log *slog.Logger) error {
 	sigctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	logAttrs := []any{"addr", cfg.HTTPAddr, "backend", cfg.Backend, "identity", cfg.IdentityMode,
-		"auth", cfg.AuthEnabled, "projection_head", head}
+	logAttrs := []any{
+		"addr", cfg.HTTPAddr, "backend", cfg.Backend, "identity", cfg.IdentityMode,
+		"auth", cfg.AuthEnabled, "projection_head", head,
+	}
 	if cfg.IdentityMode == config.IdentityJumpdrive {
 		logAttrs = append(logAttrs, "jumpdrive_url", cfg.JumpdriveURL, "jumpdrive_verify", cfg.JumpdriveVerify,
 			"jumpdrive_issuer", cfg.JumpdriveIssuer)

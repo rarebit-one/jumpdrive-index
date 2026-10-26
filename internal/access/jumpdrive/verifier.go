@@ -38,7 +38,7 @@ import (
 // Credential contract constants (credential.v1.json).
 const (
 	CredentialAlg      = "ES256"
-	CredentialType     = "jd-index+jwt"
+	CredentialType     = "jd-index+jwt" //nolint:gosec // G101: the JWT typ header value, not a credential
 	CredentialAudience = "jumpdrive-index"
 	CredentialVersion  = 1
 	// MaxClockSkew is the tolerance on exp and nbf.
