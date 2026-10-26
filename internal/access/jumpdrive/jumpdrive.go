@@ -23,7 +23,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
@@ -58,9 +57,6 @@ type Model struct {
 	secret    string
 	denyTypes []domain.Type
 	http      httpDoer
-
-	mu       sync.RWMutex
-	approver map[domain.PrincipalID]map[domain.SpaceID]bool // cached from authorize responses
 }
 
 var _ access.Model = (*Model)(nil)
@@ -83,7 +79,6 @@ func New(cfg Config) (*Model, error) {
 		secret:    cfg.SharedSecret,
 		denyTypes: append([]domain.Type(nil), cfg.RestrictedDenyTypes...),
 		http:      h,
-		approver:  make(map[domain.PrincipalID]map[domain.SpaceID]bool),
 	}, nil
 }
 
@@ -92,15 +87,22 @@ type authorizeRequest struct {
 	Bearer string `json:"bearer"`
 }
 
+// Spaces is the READ set. WriteSpaces and ApproverSpaces are separate sets; a
+// response that omits either grants nothing there (fail closed).
 type authorizeResponse struct {
 	PrincipalID    string   `json:"principal_id"`
 	Spaces         []string `json:"spaces"`
+	WriteSpaces    []string `json:"write_spaces"`
 	ApproverSpaces []string `json:"approver_spaces"`
 	Restricted     bool     `json:"restricted"`
+	OrgID          string   `json:"org_id"`
+	WorkspaceID    string   `json:"workspace_id"`
 }
 
 // Authenticate delegates to the Jumpdrive authorizer and maps its response to a
-// Decision. It also caches the principal's approver spaces for CanApprove.
+// Decision. The read, write and approve sets all travel on the returned
+// decision; nothing is cached per principal, so two concurrent requests from one
+// user in different workspaces never see each other's rights.
 func (m *Model) Authenticate(bearer string) (access.Decision, error) {
 	body, err := json.Marshal(authorizeRequest{Bearer: bearer})
 	if err != nil {
@@ -139,21 +141,42 @@ func (m *Model) Authenticate(bearer string) (access.Decision, error) {
 		return access.Decision{}, ErrUnauthenticated
 	}
 
-	spaces := make([]domain.SpaceID, len(ar.Spaces))
-	for i, s := range ar.Spaces {
-		spaces[i] = domain.SpaceID(s)
-	}
-	pid := domain.PrincipalID(ar.PrincipalID)
+	return access.Decision{
+		Principal: access.Principal{
+			ID:             domain.PrincipalID(ar.PrincipalID),
+			Spaces:         toSpaces(ar.Spaces),
+			WriteSpaces:    toSpaces(ar.WriteSpaces),
+			ApproverSpaces: toSpaces(ar.ApproverSpaces),
+			Restricted:     ar.Restricted,
+		},
+		Source: ProvenanceSource(ar.OrgID, ar.WorkspaceID, "", ""),
+	}, nil
+}
 
-	ap := make(map[domain.SpaceID]bool, len(ar.ApproverSpaces))
-	for _, s := range ar.ApproverSpaces {
-		ap[domain.SpaceID(s)] = true
+// ProvenanceSource renders the request trace a jumpdrive decision stamps on
+// every write as Provenance.Source: the control-plane org and workspace the
+// credential was bound to, its jti and the OAuth client, under their claim
+// names. Empty parts are left out, so the format is
+// "jumpdrive;jd_org=<uuid>;jd_ws=<uuid>;jti=<uuid>;jd_client=<id>".
+func ProvenanceSource(org, ws, jti, client string) string {
+	var b strings.Builder
+	b.WriteString("jumpdrive")
+	for _, kv := range [][2]string{{"jd_org", org}, {"jd_ws", ws}, {"jti", jti}, {"jd_client", client}} {
+		if kv[1] != "" {
+			b.WriteString(";" + kv[0] + "=" + kv[1])
+		}
 	}
-	m.mu.Lock()
-	m.approver[pid] = ap
-	m.mu.Unlock()
+	return b.String()
+}
 
-	return access.Decision{Principal: access.Principal{ID: pid, Spaces: spaces, Restricted: ar.Restricted}}, nil
+func toSpaces(in []string) []domain.SpaceID {
+	out := make([]domain.SpaceID, 0, len(in))
+	for _, s := range in {
+		if s != "" {
+			out = append(out, domain.SpaceID(s))
+		}
+	}
+	return out
 }
 
 // FilterFor builds the SQL-pushdown Filter (same shape as starchart).
@@ -180,7 +203,7 @@ func (m *Model) CanRead(d access.Decision, g access.Guarded) bool {
 	case domain.VisPublic:
 		return true
 	case domain.VisSpace:
-		return containsSpace(d.Principal.Spaces, g.Space)
+		return access.ContainsSpace(d.Principal.Spaces, g.Space)
 	case domain.VisPrivate:
 		return g.Owner == d.Principal.ID
 	default:
@@ -188,17 +211,17 @@ func (m *Model) CanRead(d access.Decision, g access.Guarded) bool {
 	}
 }
 
-// CanWrite reports whether the principal may write into space (space membership).
+// CanWrite reports whether the decision grants writes into space. The write set
+// is separate from the read set: a read-only (mcp:read) credential carries an
+// empty one.
 func (m *Model) CanWrite(d access.Decision, space domain.SpaceID) bool {
-	return containsSpace(d.Principal.Spaces, space)
+	return access.ContainsSpace(d.Principal.WriteSpaces, space)
 }
 
-// CanApprove consults approver spaces cached from the principal's last authorize
-// response; an unseen principal is denied (deny-by-default).
+// CanApprove reports whether the decision grants approving in space, from the
+// approver set carried on the decision itself.
 func (m *Model) CanApprove(d access.Decision, space domain.SpaceID) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.approver[d.Principal.ID][space]
+	return access.ContainsSpace(d.Principal.ApproverSpaces, space)
 }
 
 func requestID() string {
@@ -207,15 +230,6 @@ func requestID() string {
 		return "jdx-req"
 	}
 	return hex.EncodeToString(b[:])
-}
-
-func containsSpace(spaces []domain.SpaceID, s domain.SpaceID) bool {
-	for _, x := range spaces {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 func containsType(types []domain.Type, t domain.Type) bool {

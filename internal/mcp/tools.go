@@ -87,7 +87,7 @@ func (s *Server) registerTools() {
 			return s.svc.CreateEntity(ctx, bearer, in)
 		})
 
-	reg("link", "Assert a typed edge between two entities (the edge carries its own visibility).",
+	reg("link", "Assert a typed edge between two entities the caller can read, in a space the caller can write (the edge carries its own visibility).",
 		linkSchema,
 		func(ctx context.Context, bearer string, args json.RawMessage) (any, error) {
 			in, err := parseLink(args)
@@ -97,7 +97,7 @@ func (s *Server) registerTools() {
 			return s.svc.Link(ctx, bearer, in)
 		})
 
-	reg("propose_entity", "Hold an entity assertion for approval (not projected until approved).",
+	reg("propose_entity", "Hold an entity assertion for approval in a space the caller can write (not projected until approved).",
 		entitySchema,
 		func(ctx context.Context, bearer string, args json.RawMessage) (any, error) {
 			in, err := parseEntity(args)
@@ -111,7 +111,7 @@ func (s *Server) registerTools() {
 			return map[string]any{"proposal_id": id, "pending": true}, nil
 		})
 
-	reg("propose_link", "Hold an edge assertion for approval.",
+	reg("propose_link", "Hold an edge assertion for approval (same gate as link).",
 		linkSchema,
 		func(ctx context.Context, bearer string, args json.RawMessage) (any, error) {
 			in, err := parseLink(args)

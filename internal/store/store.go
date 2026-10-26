@@ -60,6 +60,14 @@ type AppendEdgeInput struct {
 	Actor     domain.PrincipalID
 }
 
+// DefaultEdgeDedupeKey is the dedupe key an edge assertion gets when the caller
+// supplies none. Dedupe is scoped by writer, and the key includes the edge's
+// space, so the same writer linking the same pair in two spaces (one user in two
+// workspaces) asserts two edges instead of colliding into one.
+func DefaultEdgeDedupeKey(e domain.Edge) string {
+	return "edge|" + string(e.Space) + "|" + string(e.Predicate) + "|" + string(e.From) + "|" + string(e.To)
+}
+
 // NeighborQuery bounds a multi-hop traversal. The AccessFilter is applied at
 // EVERY hop to edges AND nodes, so a hidden node cannot bridge two visible ones.
 type NeighborQuery struct {

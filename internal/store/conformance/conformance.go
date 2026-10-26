@@ -41,6 +41,7 @@ func RunStoreSuite(t *testing.T, open OpenFunc) {
 	t.Run("external_collision_merges", func(t *testing.T) { testExternalMerge(t, open(t)) })
 	t.Run("access_filter_hides_private", func(t *testing.T) { testAccessFilter(t, open(t)) })
 	t.Run("edge_append_and_idempotency", func(t *testing.T) { testEdge(t, open(t)) })
+	t.Run("edge_default_dedupe_is_per_space", func(t *testing.T) { testEdgeDefaultDedupePerSpace(t, open(t)) })
 	t.Run("rebuild_reproduces_projection", func(t *testing.T) { testRebuild(t, open(t)) })
 	t.Run("vector_resolve_two_band", func(t *testing.T) { testVectorResolve(t, open(t)) })
 	t.Run("semantic_search_ranks_and_filters", func(t *testing.T) { testSemanticSearch(t, open(t)) })
@@ -258,6 +259,34 @@ func testEdge(t *testing.T, st store.Store) {
 	// Idempotent replay of the same edge key.
 	if _, err := st.AppendEdgeFact(ctx, store.AppendEdgeInput{Edge: edge, Writer: "kate", DedupeKey: "e1", Actor: "kate"}); !errors.Is(err, store.ErrDuplicateFact) {
 		t.Errorf("edge replay error = %v, want ErrDuplicateFact", err)
+	}
+}
+
+// With no caller-supplied dedupe key, the default key includes the edge's space:
+// the same writer asserting the same pair in two spaces gets two edges, and a
+// replay within one space still dedupes.
+func testEdgeDefaultDedupePerSpace(t *testing.T, st store.Store) {
+	m := mustAppend(t, st, mkEntity("Movie", "Alien", "public", "kate"), "kate", "m")
+	v := mustAppend(t, st, mkEntity("VideoObject", "Kroft on Alien", "public", "kate"), "kate", "v")
+	edgeIn := func(space string) store.AppendEdgeInput {
+		return store.AppendEdgeInput{Edge: domain.Edge{
+			Predicate: "about", From: v.Entity.ID, To: m.Entity.ID,
+			Space: domain.SpaceID(space), Visibility: "space", Owner: "kate",
+		}, Writer: "kate", Actor: "kate"}
+	}
+	first, err := st.AppendEdgeFact(ctx, edgeIn("ws1"))
+	if err != nil {
+		t.Fatalf("edge in ws1: %v", err)
+	}
+	second, err := st.AppendEdgeFact(ctx, edgeIn("ws2"))
+	if err != nil {
+		t.Fatalf("same pair in ws2: %v, want a second edge", err)
+	}
+	if first.ID == second.ID {
+		t.Error("the same pair in two spaces deduped into one edge")
+	}
+	if _, err := st.AppendEdgeFact(ctx, edgeIn("ws1")); !errors.Is(err, store.ErrDuplicateFact) {
+		t.Errorf("replay in ws1: err=%v, want ErrDuplicateFact", err)
 	}
 }
 

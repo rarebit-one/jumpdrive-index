@@ -45,13 +45,12 @@ type principal struct {
 	id             domain.PrincipalID
 	spaces         []domain.SpaceID
 	restricted     bool
-	approverSpaces map[domain.SpaceID]bool
+	approverSpaces []domain.SpaceID
 }
 
 // Model is the self-contained access.Model.
 type Model struct {
-	byToken   map[string]principal             // key: sha256 hex of the raw token
-	byID      map[domain.PrincipalID]principal // for approver lookups (Decision carries no approver info)
+	byToken   map[string]principal // key: sha256 hex of the raw token
 	denyTypes []domain.Type
 }
 
@@ -62,7 +61,6 @@ var _ access.Model = (*Model)(nil)
 func New(cfg Config) (*Model, error) {
 	m := &Model{
 		byToken:   make(map[string]principal, len(cfg.Principals)),
-		byID:      make(map[domain.PrincipalID]principal, len(cfg.Principals)),
 		denyTypes: append([]domain.Type(nil), cfg.RestrictedDenyTypes...),
 	}
 	for i, pc := range cfg.Principals {
@@ -76,18 +74,12 @@ func New(cfg Config) (*Model, error) {
 		if _, dup := m.byToken[dig]; dup {
 			return nil, fmt.Errorf("starchart: duplicate token for principal %q", pc.ID)
 		}
-		ap := make(map[domain.SpaceID]bool, len(pc.ApproverSpaces))
-		for _, s := range pc.ApproverSpaces {
-			ap[s] = true
-		}
-		p := principal{
+		m.byToken[dig] = principal{
 			id:             pc.ID,
 			spaces:         append([]domain.SpaceID(nil), pc.Spaces...),
 			restricted:     pc.Restricted,
-			approverSpaces: ap,
+			approverSpaces: append([]domain.SpaceID(nil), pc.ApproverSpaces...),
 		}
-		m.byToken[dig] = p
-		m.byID[pc.ID] = p
 	}
 	return m, nil
 }
@@ -98,6 +90,8 @@ func tokenDigest(tok string) string {
 }
 
 // Authenticate resolves a bearer token to a Decision, or ErrUnauthenticated.
+// Starchart principals write wherever they read (WriteSpaces == Spaces); their
+// approver spaces come from the registry.
 func (m *Model) Authenticate(bearer string) (access.Decision, error) {
 	if bearer == "" {
 		return access.Decision{}, ErrUnauthenticated
@@ -106,7 +100,13 @@ func (m *Model) Authenticate(bearer string) (access.Decision, error) {
 	if !ok {
 		return access.Decision{}, ErrUnauthenticated
 	}
-	return access.Decision{Principal: access.Principal{ID: p.id, Spaces: p.spaces, Restricted: p.restricted}}, nil
+	return access.Decision{Principal: access.Principal{
+		ID:             p.id,
+		Spaces:         p.spaces,
+		WriteSpaces:    p.spaces,
+		ApproverSpaces: p.approverSpaces,
+		Restricted:     p.restricted,
+	}}, nil
 }
 
 // FilterFor builds the SQL-pushdown Filter for a decision.
@@ -132,7 +132,7 @@ func (m *Model) CanRead(d access.Decision, g access.Guarded) bool {
 	case domain.VisPublic:
 		return true
 	case domain.VisSpace:
-		return containsSpace(d.Principal.Spaces, g.Space)
+		return access.ContainsSpace(d.Principal.Spaces, g.Space)
 	case domain.VisPrivate:
 		return g.Owner == d.Principal.ID
 	default:
@@ -140,28 +140,15 @@ func (m *Model) CanRead(d access.Decision, g access.Guarded) bool {
 	}
 }
 
-// CanWrite reports whether the principal may write into space (space membership).
+// CanWrite reports whether the decision grants writes into space.
 func (m *Model) CanWrite(d access.Decision, space domain.SpaceID) bool {
-	return containsSpace(d.Principal.Spaces, space)
+	return access.ContainsSpace(d.Principal.WriteSpaces, space)
 }
 
-// CanApprove reports whether the principal may approve governed writes in space.
-// It re-resolves by id because a Decision carries no approver information.
+// CanApprove reports whether the decision grants approving governed writes in
+// space. The approver set is carried on the decision, not looked up per id.
 func (m *Model) CanApprove(d access.Decision, space domain.SpaceID) bool {
-	p, ok := m.byID[d.Principal.ID]
-	if !ok {
-		return false
-	}
-	return p.approverSpaces[space]
-}
-
-func containsSpace(spaces []domain.SpaceID, s domain.SpaceID) bool {
-	for _, x := range spaces {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return access.ContainsSpace(d.Principal.ApproverSpaces, space)
 }
 
 func containsType(types []domain.Type, t domain.Type) bool {
