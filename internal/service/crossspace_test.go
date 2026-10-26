@@ -100,7 +100,7 @@ func newCrossSpaceService(t *testing.T) (*service.Service, *recordingStore) {
 	}))
 	t.Cleanup(srv.Close)
 
-	am, err := jumpdrive.New(jumpdrive.Config{BaseURL: srv.URL, SharedSecret: "svc-secret"})
+	am, err := jumpdrive.New(jumpdrive.Config{BaseURL: srv.URL, SharedSecret: "svc-secret", Mode: jumpdrive.VerifyAuthorize})
 	if err != nil {
 		t.Fatalf("jumpdrive.New: %v", err)
 	}

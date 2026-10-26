@@ -8,7 +8,11 @@
 // This package defines the contract only; the implementations come later.
 package access
 
-import "github.com/rarebit-one/jumpdrive-index/internal/domain"
+import (
+	"context"
+
+	"github.com/rarebit-one/jumpdrive-index/internal/domain"
+)
 
 // PrincipalID identifies an authenticated caller.
 type PrincipalID = domain.PrincipalID
@@ -92,10 +96,27 @@ type Filter struct {
 // Model resolves identity and answers the hard-ACL questions. Reads pass the
 // derived Filter into the store; write tools consult CanWrite/CanApprove before
 // the store. Deny-by-default: no token → no principal → nothing visible.
+//
+// Authenticate takes the caller's request context, so a backend that calls out
+// (jumpdrive's authorizer, its JWKS) is cancelled with the request.
 type Model interface {
-	Authenticate(bearer string) (Decision, error)
+	Authenticate(ctx context.Context, bearer string) (Decision, error)
 	FilterFor(d Decision) Filter
 	CanRead(d Decision, g Guarded) bool
 	CanWrite(d Decision, space domain.SpaceID) bool
 	CanApprove(d Decision, space domain.SpaceID) bool
+}
+
+type requestIDKey struct{}
+
+// WithRequestID returns ctx carrying the inbound X-Request-Id, so a backend that
+// calls out can propagate it.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+// RequestID returns the request id WithRequestID stored, or "".
+func RequestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
 }

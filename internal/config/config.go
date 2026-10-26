@@ -9,6 +9,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
@@ -43,6 +44,25 @@ const (
 	IdentityJumpdrive IdentityMode = "jumpdrive" // delegate to Jumpdrive
 )
 
+// JumpdriveVerify selects how the jumpdrive identity backend trusts a
+// credential (JDX_JUMPDRIVE_VERIFY).
+type JumpdriveVerify string
+
+// JumpdriveVerify values.
+const (
+	// VerifyJWKS verifies the ES256 credential locally against the control
+	// plane's JWKS (the production end state; no callback on the hot path).
+	VerifyJWKS JumpdriveVerify = "jwks"
+	// VerifyAuthorize asks the control plane's /authorize (resolver of record).
+	VerifyAuthorize JumpdriveVerify = "authorize"
+	// VerifyDual runs both, enforces the intersection and logs mismatches.
+	VerifyDual JumpdriveVerify = "dual"
+)
+
+// jumpdriveIndexPath is the control-plane route the index's JDX_JUMPDRIVE_URL
+// points at (<console>/internal/index); the issuer defaults to what precedes it.
+const jumpdriveIndexPath = "/internal/index"
+
 // Config is the whole validated configuration.
 type Config struct {
 	Mode         Mode
@@ -55,9 +75,21 @@ type Config struct {
 	// PrincipalsFile is a JSON file describing the starchart access model
 	// (principals + restricted deny-types). Used when IdentityMode=starchart.
 	PrincipalsFile string
-	// JumpdriveURL is the base URL of the Jumpdrive authorizer, used when
+	// JumpdriveURL is the control plane's index route, <console>/internal/index
+	// (the model appends /authorize and /jwks.json). Used when
 	// IdentityMode=jumpdrive.
 	JumpdriveURL string
+	// JumpdriveSecret is the index→control-plane service bearer for /authorize,
+	// equal to the control plane's JUMPDRIVE_INDEX_AUTHORIZE_SECRET. REQUIRED
+	// when IdentityMode=jumpdrive (in every verify mode, so an operator can flip
+	// to authorize or dual during an incident without a second secret change).
+	JumpdriveSecret secret.Value
+	// JumpdriveVerify is jwks (default) | authorize | dual.
+	JumpdriveVerify JumpdriveVerify
+	// JumpdriveIssuer is the `iss` a credential must carry: the control plane's
+	// base URL (its JUMPDRIVE_BASE_URL). Defaults to JumpdriveURL minus a
+	// trailing /internal/index; required when that does not apply.
+	JumpdriveIssuer string
 
 	// HTTPAddr is where the service listens. Loopback is the safe default.
 	HTTPAddr string
@@ -113,7 +145,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	c := &Config{
 		DSN:                      getenv("JDX_DSN"),
 		PrincipalsFile:           getenv("JDX_PRINCIPALS_FILE"),
-		JumpdriveURL:             getenv("JDX_JUMPDRIVE_URL"),
+		JumpdriveURL:             strings.TrimRight(getenv("JDX_JUMPDRIVE_URL"), "/"),
+		JumpdriveSecret:          secret.Value(getenv("JDX_JUMPDRIVE_SECRET")),
+		JumpdriveIssuer:          strings.TrimRight(getenv("JDX_JUMPDRIVE_ISSUER"), "/"),
 		HTTPAddr:                 get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
 		MCPAuthMode:              strings.ToLower(get("JDX_MCP_AUTH_MODE", "bearer")),
 		MCPVoidbindTrustFile:     getenv("JDX_MCP_VOIDBIND_TRUST_FILE"),
@@ -177,9 +211,16 @@ func Load(getenv func(string) string) (*Config, error) {
 	if c.Backend == BackendPostgres && c.DSN == "" {
 		errs = append(errs, errors.New("JDX_DSN: required when JDX_BACKEND=postgres"))
 	}
-	// Identity-aware: the Jumpdrive delegate needs an authorizer URL to serve.
-	if c.Mode == ModeServe && c.IdentityMode == IdentityJumpdrive && c.JumpdriveURL == "" {
-		errs = append(errs, errors.New("JDX_JUMPDRIVE_URL: required when JDX_IDENTITY=jumpdrive"))
+	// Identity-aware: the jumpdrive backend needs the control plane's index
+	// route, its service secret, a verify mode and (for jwks/dual) an issuer.
+	switch v := JumpdriveVerify(strings.ToLower(get("JDX_JUMPDRIVE_VERIFY", string(VerifyJWKS)))); v {
+	case VerifyJWKS, VerifyAuthorize, VerifyDual:
+		c.JumpdriveVerify = v
+	default:
+		errs = append(errs, fmt.Errorf("JDX_JUMPDRIVE_VERIFY: unrecognised %q (want jwks|authorize|dual)", v))
+	}
+	if c.Mode == ModeServe && c.IdentityMode == IdentityJumpdrive {
+		errs = append(errs, c.validateJumpdrive()...)
 	}
 	// A heyarr token armed with no endpoint is a misconfiguration, not a silent
 	// no-op — the credential would never be sent, so fail loud (default-deny).
@@ -197,6 +238,26 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, errors.Join(errs...)
 	}
 	return c, nil
+}
+
+func (c *Config) validateJumpdrive() []error {
+	var errs []error
+	if c.JumpdriveURL == "" {
+		errs = append(errs, errors.New("JDX_JUMPDRIVE_URL: required when JDX_IDENTITY=jumpdrive"))
+	} else if u, err := url.Parse(c.JumpdriveURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		errs = append(errs, fmt.Errorf("JDX_JUMPDRIVE_URL: %q is not an http(s) URL", c.JumpdriveURL))
+	}
+	if c.JumpdriveSecret.IsZero() {
+		errs = append(errs, errors.New("JDX_JUMPDRIVE_SECRET: required when JDX_IDENTITY=jumpdrive (the control plane's JUMPDRIVE_INDEX_AUTHORIZE_SECRET)"))
+	}
+	if c.JumpdriveIssuer == "" && strings.HasSuffix(c.JumpdriveURL, jumpdriveIndexPath) {
+		c.JumpdriveIssuer = strings.TrimSuffix(c.JumpdriveURL, jumpdriveIndexPath)
+	}
+	if c.JumpdriveIssuer == "" && c.JumpdriveVerify != VerifyAuthorize {
+		errs = append(errs, fmt.Errorf(
+			"JDX_JUMPDRIVE_ISSUER: required with JDX_JUMPDRIVE_VERIFY=%s when JDX_JUMPDRIVE_URL does not end in %s", c.JumpdriveVerify, jumpdriveIndexPath))
+	}
+	return errs
 }
 
 // isRoutable reports whether addr binds something other than loopback. A bare

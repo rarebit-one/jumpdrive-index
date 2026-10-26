@@ -55,13 +55,17 @@ shape, not the values):
 
 | Env | Type | Notes |
 |-----|------|-------|
-| `JDX_JUMPDRIVE_SECRET` | **SECRET** | shared secret for the Jumpdrive authorizer (identity=jumpdrive) |
+| `JDX_JUMPDRIVE_SECRET` | **SECRET**, required | the index→control-plane service bearer for `/authorize`; equals the control plane's `JUMPDRIVE_INDEX_AUTHORIZE_SECRET`. Required with `JDX_IDENTITY=jumpdrive` in every verify mode (boot refusal otherwise) |
 | `JDX_HEYARR_TOKEN` | **SECRET**, optional | only with `JDX_HEYARR_URL`; a token with no URL is a hard boot refusal |
 
 Plain (in-spec) config: `JDX_MODE`, `JDX_BACKEND=postgres`, `JDX_HTTP_ADDR=":8090"`,
-`JDX_AUTH=true`, `JDX_IDENTITY=jumpdrive`, `JDX_JUMPDRIVE_URL` (placeholder — point
-at the real authorizer). `JDX_DSN` is bound to the managed database via
-`${jumpdrive-index-db.DATABASE_URL}` and substituted at deploy time.
+`JDX_AUTH=true`, `JDX_IDENTITY=jumpdrive`, `JDX_JUMPDRIVE_URL` (placeholder — set
+to `https://<console host>/internal/index`), `JDX_JUMPDRIVE_VERIFY`
+(`jwks` | `authorize` | `dual`; the spec ships `dual` for rollout, and `jwks` is
+the end state). `JDX_JUMPDRIVE_ISSUER` is optional: it defaults to
+`JDX_JUMPDRIVE_URL` minus `/internal/index`, and must equal the control plane's
+`JUMPDRIVE_BASE_URL` (the credential's `iss`). `JDX_DSN` is bound to the managed
+database via `${jumpdrive-index-db.DATABASE_URL}` and substituted at deploy time.
 
 > **Auth posture (ADR-0011):** the service binds a routable address on App
 > Platform, so `JDX_AUTH=true` is mandatory — the process refuses to boot
