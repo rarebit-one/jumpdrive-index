@@ -17,6 +17,12 @@ updates:
     groups:
       go-dependencies:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directories: ["/", "/deploy/docker"]
+    schedule: { interval: weekly }
+    groups:
+      docker:
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
