@@ -21,8 +21,10 @@
 // config, a REQUIRED service-secret bearer, explicit timeouts, a propagated
 // X-Request-Id, a typed error, and a narrow httpDoer seam for testing.
 //
-// PROVISIONAL: the Jumpdrive `/authorize` request/response contract below is not
-// yet ratified against jumpdrive-web; treat it as a proposal.
+// The credential, JWKS and /authorize wire shapes are the control plane's
+// contract (v1), ratified in the ADR and vendored byte-for-byte under contract/
+// (see contract/SOURCE.md). contract_test.go is the drift gate: it fails if this
+// package and the vendored fixtures disagree.
 package jumpdrive
 
 import (
@@ -58,6 +60,11 @@ var ErrAuthorizer = errors.New("jumpdrive: authorizer request failed")
 
 // AuthorizeContract is the /authorize response contract this client speaks.
 const AuthorizeContract = "jumpdrive-authorize/v1"
+
+// AuthorizeErrServiceSecret is the /authorize error code for a rejected
+// JDX_JUMPDRIVE_SECRET (authorize-errors.v1.json): an operator misconfiguration,
+// logged at error level rather than treated as a user failure.
+const AuthorizeErrServiceSecret = "invalid_service_secret" //nolint:gosec // G101: an /authorize error code, not a credential
 
 // httpDoer is the minimal HTTP seam (satisfied by *http.Client), so tests can
 // drive the model against an httptest.Server or a fake.
@@ -319,7 +326,7 @@ func (m *Model) authorize(ctx context.Context, bearer string) (access.Decision, 
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		var ae authorizeError
 		_ = json.NewDecoder(lr).Decode(&ae)
-		if ae.Error == "invalid_service_secret" {
+		if ae.Error == AuthorizeErrServiceSecret {
 			// Our own credential is wrong: an operator problem, not a user one.
 			m.log.Error("jumpdrive: the control plane rejected JDX_JUMPDRIVE_SECRET; every authorize call will fail",
 				"url", m.baseURL+"/authorize")
