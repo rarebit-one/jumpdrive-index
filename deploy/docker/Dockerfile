@@ -2,7 +2,7 @@
 # Two stages: a static CGO-off build, then a distroless runtime with no shell or
 # package manager. The binary is pure-Go (modernc.org/sqlite), so CGO stays off
 # and the image is minimal.
-FROM golang:1.26-alpine AS build
+FROM golang:1.27-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
