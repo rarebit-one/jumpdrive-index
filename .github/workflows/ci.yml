@@ -16,6 +16,9 @@ concurrency:
 # embed client and the /mcp Device verifier authenticate with). GOPRIVATE turns
 # off the module proxy / checksum DB for the org so go fetches it straight from
 # git; each job's "authenticate" step supplies a token git can read it with.
+# Dependabot-triggered runs only receive Dependabot secrets, so AUTOLAND_PAT is
+# empty there (#39); they fall back to GO_PRIVATE_READ_PAT, a read-only PAT held
+# as an org Dependabot secret. Normal runs still use AUTOLAND_PAT.
 # Mirrors farcaster / unifi-mcp-go CI.
 env:
   GOPRIVATE: github.com/rarebit-one/*
@@ -38,7 +41,7 @@ jobs:
       - name: authenticate to private modules
         run: |
           git config --global \
-            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod, cache: true }
@@ -79,7 +82,7 @@ jobs:
       - name: authenticate to private modules
         run: |
           git config --global \
-            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod, cache: true }
@@ -101,7 +104,7 @@ jobs:
       - name: authenticate to private modules
         run: |
           git config --global \
-            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod, cache: true }
@@ -123,7 +126,7 @@ jobs:
       - name: authenticate to private modules
         run: |
           git config --global \
-            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod, cache: true }
@@ -166,7 +169,7 @@ jobs:
       - name: authenticate to private modules
         run: |
           git config --global \
-            url."https://x-access-token:${{ secrets.AUTOLAND_PAT }}@github.com/".insteadOf \
+            url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with: { go-version-file: go.mod, cache: true }
