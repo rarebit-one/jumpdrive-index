@@ -1,0 +1,12 @@
+{
+  "headers": {
+    "Authorization": "Bearer <JDX_JUMPDRIVE_SECRET = JUMPDRIVE_INDEX_AUTHORIZE_SECRET>",
+    "Content-Type": "application/json",
+    "X-Request-Id": "<propagated>"
+  },
+  "method": "POST",
+  "path": "/internal/index/authorize",
+  "body": {
+    "bearer": "<per-caller credential, see credential.v1.json>"
+  }
+}

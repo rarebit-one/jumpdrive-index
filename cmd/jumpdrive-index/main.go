@@ -113,6 +113,10 @@ func run(log *slog.Logger) error {
 		logAttrs = append(logAttrs, "jumpdrive_url", cfg.JumpdriveURL, "jumpdrive_verify", cfg.JumpdriveVerify,
 			"jumpdrive_issuer", cfg.JumpdriveIssuer)
 	}
+	if cfg.LegacyStarchart && cfg.Backend == config.BackendPostgres && cfg.IdentityMode == config.IdentityStarchart {
+		log.Warn("serving postgres with the legacy starchart identity (JDX_LEGACY_STARCHART): a cutover-only " +
+			"escape hatch; move to JDX_IDENTITY=jumpdrive (jumpdrive-web#748)")
+	}
 	log.Info("jumpdrive-index serving", logAttrs...)
 	return srv.Serve(sigctx, cfg.HTTPAddr)
 }

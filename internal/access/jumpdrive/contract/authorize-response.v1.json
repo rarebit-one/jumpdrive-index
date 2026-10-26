@@ -1,0 +1,21 @@
+{
+  "status": 200,
+  "headers": {
+    "Cache-Control": "max-age=30, private"
+  },
+  "body": {
+    "contract": "jumpdrive-authorize/v1",
+    "principal_id": "jd:acct:2f1c8a52-6a0e-4f43-9b0a-1d2e3f405162",
+    "spaces": [
+      "jd:ws:c4e5f607-1829-4a3b-9c5d-6e7f8091a2b3",
+      "jd:org:7b3d9e10-1c2d-4e5f-8a9b-0c1d2e3f4a5b"
+    ],
+    "write_spaces": ["jd:ws:c4e5f607-1829-4a3b-9c5d-6e7f8091a2b3"],
+    "approver_spaces": [],
+    "restricted": false,
+    "org_id": "7b3d9e10-1c2d-4e5f-8a9b-0c1d2e3f4a5b",
+    "workspace_id": "c4e5f607-1829-4a3b-9c5d-6e7f8091a2b3",
+    "access": "full",
+    "expires_at": "2026-10-26T03:01:00Z"
+  }
+}
