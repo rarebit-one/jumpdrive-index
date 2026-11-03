@@ -28,11 +28,16 @@ import (
 
 const maxBodyBytes = 4 << 20 // 4 MiB request cap
 
+// readyTimeout bounds the readiness probe's dependency check, so a hung store
+// fails the probe instead of outliving the platform's probe timeout.
+const readyTimeout = 2 * time.Second
+
 // Server is the HTTP handler set.
 type Server struct {
-	mcp  *mcp.Server
-	log  *slog.Logger
-	auth mcpauth.Authorizer
+	mcp   *mcp.Server
+	log   *slog.Logger
+	auth  mcpauth.Authorizer
+	ready func(context.Context) error
 }
 
 // Option configures a Server.
@@ -47,6 +52,13 @@ func WithAuthorizer(a mcpauth.Authorizer) Option {
 			s.auth = a
 		}
 	}
+}
+
+// WithReadiness makes GET /health/ready run check (bounded by readyTimeout) and
+// answer 503 when it fails, so the rotation gate reflects the store rather than
+// only the process. Without it the probe answers 200 whenever the process serves.
+func WithReadiness(check func(context.Context) error) Option {
+	return func(s *Server) { s.ready = check }
 }
 
 // New builds the HTTP server around an MCP server. By default callers authenticate
@@ -74,8 +86,23 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /mcp", s.handleMCPStream)
 	mux.HandleFunc("DELETE /mcp", s.handleMCPDelete)
 	mux.HandleFunc("GET /health/alive", func(w http.ResponseWriter, _ *http.Request) { writeText(w, http.StatusOK, "ok") })
-	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) { writeText(w, http.StatusOK, "ready") })
+	mux.HandleFunc("GET /health/ready", s.handleReady)
 	return s.recoverPanics(mux)
+}
+
+// handleReady is the rotation gate: 200 when the readiness check passes (or none
+// is configured), 503 otherwise. The cause is logged, never returned.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.ready != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), readyTimeout)
+		defer cancel()
+		if err := s.ready(ctx); err != nil {
+			s.log.Warn("readiness check failed", "err", err)
+			writeText(w, http.StatusServiceUnavailable, "not ready")
+			return
+		}
+	}
+	writeText(w, http.StatusOK, "ready")
 }
 
 // handleMCPPost is the Streamable HTTP request/response leg: it accepts a JSON-RPC

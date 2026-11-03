@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -70,6 +71,53 @@ func TestHealthEndpoints(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("%s = %d, want 200", p, resp.StatusCode)
 		}
+	}
+}
+
+func TestReadinessCheck(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"store reachable", nil, http.StatusOK},
+		{"store unreachable", errors.New("dial tcp: connection refused"), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotDeadline bool
+			h := httpapi.New(nil, nil, httpapi.WithReadiness(func(ctx context.Context) error {
+				_, gotDeadline = ctx.Deadline()
+				return tc.err
+			}))
+			ts := httptest.NewServer(h.Routes())
+			t.Cleanup(ts.Close)
+
+			resp, err := http.Get(ts.URL + "/health/ready")
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Errorf("/health/ready = %d, want %d", resp.StatusCode, tc.want)
+			}
+			if strings.Contains(string(b), "refused") {
+				t.Errorf("readiness body leaks the cause: %q", b)
+			}
+			if !gotDeadline {
+				t.Error("readiness check ran without a deadline")
+			}
+
+			// Liveness never consults the store: a wedged process, not a lost dependency.
+			resp, err = http.Get(ts.URL + "/health/alive")
+			if err != nil {
+				t.Fatalf("get alive: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("/health/alive = %d, want 200", resp.StatusCode)
+			}
+		})
 	}
 }
 

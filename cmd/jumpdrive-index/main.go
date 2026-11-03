@@ -88,7 +88,12 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("embedder: %w", err)
 	}
 
-	var httpOpts []httpapi.Option
+	// Readiness re-reads the projection head, so the rotation gate fails while the
+	// store is unreachable instead of reporting ready on a live process alone.
+	httpOpts := []httpapi.Option{httpapi.WithReadiness(func(ctx context.Context) error {
+		_, err := st.ProjectionHead(ctx)
+		return err
+	})}
 	if cfg.MCPAuthMode == "voidbind" {
 		// The op log is opened (and proven writable) before serving: a remove
 		// that cannot be recorded must stop the boot, not silently not stick.
