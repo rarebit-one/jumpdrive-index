@@ -1,8 +1,9 @@
-# Hosted (Track B) image: builds the static binary IN-image, because DigitalOcean
-# App Platform builds from source rather than taking a prebuilt artifact. This is
-# distinct from deploy/docker/Dockerfile — that one is the Starchart homelab image
-# and expects a binary handed to it by the release pipeline. Mirrors the
-# jumpdrive-broker template.
+# Self-contained source build of the hosted (Postgres) image: compiles the static
+# binary IN-image. It needs access to the PRIVATE void-which-binds-go module, so an
+# unauthenticated build (App Platform's, or a plain `docker build`) cannot fetch it;
+# hosted deploys run the GHCR image instead, built on the runner and packaged by
+# deploy/ghcr/Dockerfile with the same runtime (docs/deploy/hosted-app-platform.md).
+# Distinct from deploy/docker/Dockerfile, the Starchart homelab image.
 #
 # Build stage. Pinned by digest, not tag: a moving base image means the thing that
 # built yesterday is not the thing that builds today, and CI would be comparing
@@ -44,7 +45,7 @@ COPY --from=build /out/jumpdrive-index /jumpdrive-index
 USER 65532:65532
 
 # Match the default JDX_HTTP_ADDR port. Serving on a routable address REQUIRES
-# JDX_AUTH=true or the process refuses to boot (ADR-0011). MODE=migrate runs as a
-# PRE_DEPLOY phase (see .do/app.yaml), never at container start.
+# JDX_AUTH=true or the process refuses to boot (ADR-0011). MODE=migrate is a
+# separate run of this image (a PRE_DEPLOY job on App Platform), never at container start.
 EXPOSE 8090
 ENTRYPOINT ["/jumpdrive-index"]

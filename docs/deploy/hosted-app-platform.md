@@ -1,99 +1,94 @@
-# Hosted deploy — DigitalOcean App Platform (Track B)
+# Hosted deploy: DigitalOcean App Platform
 
-How to run the **hosted** build of `jumpdrive-index`: Postgres-backed, built from
-source by DigitalOcean App Platform. This is a *different* artifact from the
-Starchart homelab deploy — see [`reference-linux-host.md`](reference-linux-host.md)
-for that one. Mirrors the `jumpdrive-broker` template.
+How the **hosted** build of `jumpdrive-index` runs: backed by Postgres, using the
+`jumpdrive` identity, and serving one Jumpdrive control plane. It's a different
+deploy from the Starchart homelab one; [`reference-linux-host.md`](reference-linux-host.md)
+covers that.
 
-## Two build paths, one binary
+## Where it runs
 
-| | Starchart (homelab) | Hosted (App Platform) |
+| | Staging | Production |
 |---|---|---|
-| Artifact | `deploy/docker/Dockerfile` — distroless image that takes a **prebuilt** binary from the release pipeline | root `Dockerfile` — **builds the binary in-image** (`golang` builder → `scratch`), because App Platform builds from source |
-| Backend | `sqlite` (owns all its own bytes) | `postgres` (a dedicated managed DB) |
-| Identity | `starchart` (self-contained principals) | `jumpdrive` (delegate to an authorizer) |
-| Runs under | systemd on a Linux host | App Platform service + PRE_DEPLOY job |
-| Spec | `deploy/systemd/*` | `.do/app.yaml` |
+| Host | hyperion-2, homelab-ops role `jumpdrive-index-staging` | an **internal service in the `jumpdrive-web` DO app**, next to `control-plane` (owner decision 2026-11-03) |
+| Image | `ghcr.io/rarebit-one/jumpdrive-index@sha256:…`, pinned by digest | the same image, pinned by digest in the live app spec |
+| Store | a dedicated pgvector Postgres 16 container | database `jumpdrive_index` on the `jumpdrive-pg` managed cluster (PG 16 + `vector`) |
+| Migrations | `jd-index-migrate.service` (`JDX_MODE=migrate`) | the `jumpdrive-index-migrate` PRE_DEPLOY job (`JDX_MODE=migrate`) |
+| Reached at | `http://jd-index:8090` on the podman bridge | `http://jumpdrive-index:8090`, internal to the app, with no public route |
 
-Both are `CGO_ENABLED=0` static builds of `./cmd/jumpdrive-index`; the store
-backends (`modernc.org/sqlite`, `jackc/pgx`) are pure Go, so the runtime is
-`scratch`/distroless with no libc.
+**The production spec and rollout live in jumpdrive-web**, because the index is one of
+that app's components:
 
-## Migrations: a PRE_DEPLOY phase (`MODE=migrate`)
+- [`docs/index-production-rollout.md`](https://github.com/rarebit-one/jumpdrive-web/blob/main/docs/index-production-rollout.md)
+  is the plan, the env, the rollout steps and their rollbacks;
+- its `index-spec.jq` is the live-spec edit;
+- `.do/app.yaml` there is the committed record.
 
-Migrations do **not** run at container start. The `.do/app.yaml` declares a
-`PRE_DEPLOY` job that runs the *same image* with `JDX_MODE=migrate`; the service
-runs it with `JDX_MODE=serve`. Rationale (same as jumpdrive-broker):
+This repo no longer carries an App Platform spec. The standalone app it used to
+describe, with a source build and an App Platform dev database, was never deployed,
+and the owner's decision replaced it.
 
-- A migration failure at boot kills the process before it binds a port, so the
-  only symptom is a health-check timeout that says nothing about migrations.
-- As its own phase it fails with a readable error and the **previous version keeps
-  serving**.
-- It decouples migration from `instance_count` — boot-time migration with N
-  replicas is N racing writers.
+## The image: built on the runner, not on App Platform
 
-`JDX_MODE` is an **env**, not a `run_command`: the runtime image is `scratch`, so
-there is no shell for App Platform to invoke.
+`.github/workflows/publish-image.yml` builds the static `linux/amd64` binary on the
+runner with the private-module auth that `ci.yml` uses, then packages it with
+`deploy/ghcr/Dockerfile` (`scratch`, CA bundle, uid 65532, port 8090, no shell). It
+pushes `sha-<full sha>`, which is immutable, and `main`, which is a convenience tag.
+Deploys pin the **digest** from the job summary.
+
+App Platform can't build this repo from source. The root `Dockerfile` runs
+`go mod download` inside the image, and an unauthenticated build can't fetch the
+private `void-which-binds-go` module. App Platform also never auto-deploys GHCR
+images, so every bump is a deliberate, reviewed change to the pinned digest. That
+matches the staging policy.
+
+The package is **public**; the owner accepted this on 2026-10-26. The compiled
+void-which-binds-go is exposed, but not its source. App Platform pulls the image
+without `registry_credentials`.
+
+## Migrations: their own phase (`JDX_MODE=migrate`)
+
+Migrations never run at serve start. The same image runs with `JDX_MODE=migrate`, as
+a PRE_DEPLOY job on App Platform and as a oneshot unit on staging. `JDX_MODE` is an
+env var and not a `run_command` because the image is `scratch` and has no shell.
+Running them as a separate phase has three benefits:
+
+- A failed migration fails with a readable error, and the previous version keeps
+  serving. A boot-time failure would show up only as a health-check timeout.
+- Migrations are decoupled from `instance_count`. N replicas migrating at boot means
+  N racing writers.
+- The migrate path builds no access model, so it gets only `JDX_BACKEND` and
+  `JDX_DSN`, not the identity secret.
+
+Migration `0002` runs `CREATE EXTENSION IF NOT EXISTS vector`. On DO managed
+Postgres, create the extension once as `doadmin` before the first migrate. The
+migration's own statement is then a no-op.
 
 ## Dual health probes
 
-App Platform wires **two** probes at endpoints already served by
-`internal/httpapi`:
+- `GET /health/ready` is the **rotation** gate. It re-reads the projection head
+  (`max(facts.seq)`, bounded at 2s) and answers 503 while the store is unreachable
+  (jumpdrive-index#57).
+- `GET /health/alive` is the **restart** gate. It checks only the process and never
+  the store, so a database outage can't restart-loop the service.
 
-- `health_check` → `GET /health/ready` — the **rotation** gate. A failing instance
-  is pulled from rotation but not killed.
-- `liveness_health_check` → `GET /health/alive` — the **restart** gate. A wedged
-  process is restarted.
-
-They are not redundant: an app with a single `health_check` cannot express "this
-process is wedged, kill it" separately from "this process cannot serve right now".
-
-## Required secrets / env
-
-Set out of band against the **live** app (never committed — the spec carries the
-shape, not the values):
+## Required env
 
 | Env | Type | Notes |
 |-----|------|-------|
-| `JDX_JUMPDRIVE_SECRET` | **SECRET**, required | the index→control-plane service bearer for `/authorize`; equals the control plane's `JUMPDRIVE_INDEX_AUTHORIZE_SECRET`. Required with `JDX_IDENTITY=jumpdrive` in every verify mode (boot refusal otherwise) |
-| `JDX_HEYARR_TOKEN` | **SECRET**, optional | only with `JDX_HEYARR_URL`; a token with no URL is a hard boot refusal |
+| `JDX_MODE` | plain | `serve`, or `migrate` for the migrate job |
+| `JDX_BACKEND` | plain | `postgres` |
+| `JDX_DSN` | **SECRET** | `postgresql://…/jumpdrive_index?sslmode=require&pool_max_conns=4` on the direct port, not a pooler, because migrations take advisory locks |
+| `JDX_HTTP_ADDR` | plain | `:8090`. A routable bind, so `JDX_AUTH=true` is mandatory (ADR-0011 boot refusal) |
+| `JDX_AUTH` | plain | `true` |
+| `JDX_IDENTITY` | plain | `jumpdrive`. `starchart` is refused on Postgres unless `JDX_LEGACY_STARCHART=1` is set; no hosted index has ever needed that |
+| `JDX_JUMPDRIVE_URL` | plain | `https://<console host>/internal/index`. The index fetches `<url>/jwks.json` and POSTs `<url>/authorize`. Use the public origin: the issuer is derived as this URL minus `/internal/index` and must equal the control plane's `JUMPDRIVE_BASE_URL` (`JDX_JUMPDRIVE_ISSUER` overrides it) |
+| `JDX_JUMPDRIVE_VERIFY` | plain | `jwks` \| `authorize` \| `dual`. Use `dual` for rollout, `jwks` as the end state, and `authorize` as the incident fallback |
+| `JDX_JUMPDRIVE_SECRET` | **SECRET** | the index→control-plane service bearer for `/authorize`, equal to the control plane's `JUMPDRIVE_INDEX_AUTHORIZE_SECRET`. Required with `JDX_IDENTITY=jumpdrive` in every verify mode |
+| `JDX_HEYARR_URL` / `JDX_HEYARR_TOKEN` | plain / **SECRET** | optional, and only together: a token with no URL is a boot refusal |
 
-Plain (in-spec) config: `JDX_MODE`, `JDX_BACKEND=postgres`, `JDX_HTTP_ADDR=":8090"`,
-`JDX_AUTH=true`, `JDX_IDENTITY=jumpdrive`, `JDX_JUMPDRIVE_URL` (placeholder — set
-to `https://<console host>/internal/index`), `JDX_JUMPDRIVE_VERIFY`
-(`jwks` | `authorize` | `dual`; the spec ships `dual` for rollout, and `jwks` is
-the end state). `JDX_JUMPDRIVE_ISSUER` is optional: it defaults to
-`JDX_JUMPDRIVE_URL` minus `/internal/index`, and must equal the control plane's
-`JUMPDRIVE_BASE_URL` (the credential's `iss`). `JDX_DSN` is bound to the managed
-database via `${jumpdrive-index-db.DATABASE_URL}` and substituted at deploy time.
+## Changing the live app
 
-> **Starchart is refused on Postgres.** A `serve` with `JDX_BACKEND=postgres` and
-> `JDX_IDENTITY=starchart` (also the identity default) is a boot refusal: the
-> static shared principal is the homelab (SQLite) identity model. A live app still
-> on the shared bearer must set `JDX_LEGACY_STARCHART=1` **before** it deploys a
-> release with this check, and drop it once the cutover to `jumpdrive` is done
-> (jumpdrive-web `docs/index-principal-adr.md`, Decision 5.6). The `migrate` job
-> is exempt: it builds no access model.
-
-> **Auth posture (ADR-0011):** the service binds a routable address on App
-> Platform, so `JDX_AUTH=true` is mandatory — the process refuses to boot
-> unauthenticated on a non-loopback bind.
-
-## Dedicated dev database
-
-`.do/app.yaml` declares its **own** managed Postgres (`jumpdrive-index-db`, PG 16,
-`production: false`, ~$7/mo) rather than a shared cluster — sharing would couple
-this service's lifecycle to another app's (a resize or connection-limit exhaustion
-elsewhere would hit it). It is a dev database, not yet a durable system of record.
-
-## Applying spec changes
-
-🔴 Do **not** `doctl apps update --spec .do/app.yaml` directly — a committed spec
-has empty `SECRET` values, so a blind apply wipes the live secrets. Fetch the live
-spec, edit it, apply it back:
-
-```bash
-doctl --context rarebit apps spec get <app-id> > /tmp/live.yaml
-# edit /tmp/live.yaml
-doctl --context rarebit apps update <app-id> --spec /tmp/live.yaml
-```
+The jumpdrive-web rules apply. Never `doctl apps update --spec` a committed spec:
+committed SECRETs have no value, so applying one wipes the live secrets. Use
+jumpdrive-web's `/do-live-spec` round-trip: fetch the live spec, edit only what you
+need, and apply that.
