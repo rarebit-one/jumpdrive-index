@@ -1,16 +1,19 @@
 name: publish-image
 
-# Publishes ghcr.io/rarebit-one/jumpdrive-index for self-hosted deploys: today the
-# STAGING index on hyperion-2 (thesim-family/homelab-ops roles/jumpdrive-index-staging.nix,
-# jumpdrive-web#748 Phase 3), which pins an image BY DIGEST and bumps it by PR. The
-# hosted production app still builds from source on App Platform (.do/app.yaml).
+# Publishes ghcr.io/rarebit-one/jumpdrive-index, the image every hosted index runs:
+# the STAGING index on hyperion-2 (thesim-family/homelab-ops roles/jumpdrive-index-staging.nix)
+# and the PRODUCTION index, an internal component of the jumpdrive-web DO app
+# (jumpdrive-web docs/index-production-rollout.md). Both pin an image BY DIGEST and
+# bump it deliberately; App Platform can't source-build this repo (see below).
 #
 # Tags: sha-<full sha> (immutable) and main (moving, convenience only; deploys pin the
 # digest printed in the job summary). The binary is built on the runner, because the
 # private void-which-binds-go module needs the same git auth ci.yml uses and an image
 # build must not carry that token; deploy/ghcr/Dockerfile only packages it.
 #
-# Keep the package PRIVATE: the binary embeds the private void-which-binds-go module.
+# The package is PUBLIC (the repo is; GitHub can't flip a package back to private). The
+# owner accepted that on 2026-10-26: the compiled void-which-binds-go is exposed, not its
+# source. App Platform pulls it without registry credentials.
 
 on:
   push:
@@ -76,7 +79,8 @@ jobs:
           {
             echo "### ${IMAGE}"
             echo
-            echo "Pin this in homelab-ops (\`jumpdriveIndexImage\`):"
+            echo "Pin this in homelab-ops (\`jumpdriveIndexImage\`, staging first), then in the"
+            echo "jumpdrive-web live spec (index-spec.jq \`pin\` step):"
             echo
             echo "\`${digest}\`"
           } >> "$GITHUB_STEP_SUMMARY"
