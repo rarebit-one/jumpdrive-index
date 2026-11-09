@@ -14,9 +14,8 @@
 // Capability seam (heyarr ADR-0025 shape), so the main binary stays pure-Go /
 // CGO-off / distroless-safe and degrades gracefully when the toolchain is absent.
 //
-// The heyarr reconciliation (4b) is STUBBED pending heyarr ADR-0050 (heyarr PR
-// #349): it calls a PROPOSED get_external_ids MCP tool. The tests pin that
-// proposed contract against a mock; it must be re-pinned when #349 lands.
+// The heyarr reconciliation (4b) calls GetExternalIDs (heyarr ADR-0050, PR
+// #355), using the typed request/response from internal/heyarr/external_ids.go.
 package ingest
 
 import (
@@ -117,10 +116,11 @@ type Result struct {
 }
 
 // caller is the minimal slice of a heyarr MCP client ingest needs for
-// reconciliation: the generic tools/call primitive. *heyarr.Client satisfies it;
-// a nil caller disables reconciliation (4b is skipped, 4a still runs).
+// reconciliation. *heyarr.Client satisfies it; a nil caller disables
+// reconciliation (4b is skipped, 4a still runs).
 type caller interface {
 	Call(ctx context.Context, tool string, args any, out any) error
+	GetExternalIDs(ctx context.Context, req heyarr.ExternalIDsRequest) ([]heyarr.ExternalID, error)
 }
 
 // Ingestor drives ingestion against a store, a capability, and an optional heyarr
@@ -356,26 +356,15 @@ func (i *Ingestor) link(ctx context.Context, req Request, pred domain.Predicate,
 
 // resolveHeyarrWork asks heyarr which work carries a tmdb id.
 //
-// Pinned to heyarr's shipped get_external_ids MCP tool (ADR-0050, heyarr PR
-// #355): the reverse lookup {source,value} returns
-// {external_ids:[{source,value,entity_type,entity_id}]} — an empty list on no
-// match, never an error. We take the first row whose entity_type is "work". A
-// full contract-drift gate over heyarr's vendored MCP contract is still a
-// follow-up; this decode matches the tool heyarr now exposes.
+// Uses GetExternalIDs (ADR-0050, heyarr PR #355): the reverse lookup
+// {source,value} returns a flat list — empty on no match, never an error. We
+// take the first row whose entity_type is "work".
 func (i *Ingestor) resolveHeyarrWork(ctx context.Context, tmdb string) (string, bool, error) {
-	var out struct {
-		ExternalIDs []struct {
-			Source     string `json:"source"`
-			Value      string `json:"value"`
-			EntityType string `json:"entity_type"`
-			EntityID   string `json:"entity_id"`
-		} `json:"external_ids"`
-	}
-	if err := i.reconcil.Call(ctx, "get_external_ids",
-		map[string]string{"source": "tmdb", "value": tmdb}, &out); err != nil {
+	ids, err := i.reconcil.GetExternalIDs(ctx, heyarr.ExternalIDsRequest{Source: "tmdb", Value: tmdb})
+	if err != nil {
 		return "", false, err
 	}
-	for _, x := range out.ExternalIDs {
+	for _, x := range ids {
 		if x.EntityType == "work" && x.EntityID != "" {
 			return x.EntityID, true, nil
 		}
