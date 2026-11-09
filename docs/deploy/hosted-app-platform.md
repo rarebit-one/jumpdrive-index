@@ -35,11 +35,10 @@ runner with the private-module auth that `ci.yml` uses, then packages it with
 pushes `sha-<full sha>`, which is immutable, and `main`, which is a convenience tag.
 Deploys pin the **digest** from the job summary.
 
-App Platform can't build this repo from source. The root `Dockerfile` runs
-`go mod download` inside the image, and an unauthenticated build can't fetch the
-private `void-which-binds-go` module. App Platform also never auto-deploys GHCR
-images, so every bump is a deliberate, reviewed change to the pinned digest. That
-matches the staging policy.
+App Platform can't build this repo from source: an in-image build would need to
+fetch the private `void-which-binds-go` module unauthenticated, which fails. App
+Platform also never auto-deploys GHCR images, so every bump is a deliberate,
+reviewed change to the pinned digest. That matches the staging policy.
 
 The package is **public**; the owner accepted this on 2026-10-26. The compiled
 void-which-binds-go is exposed, but not its source. App Platform pulls the image
