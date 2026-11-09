@@ -83,7 +83,6 @@ migration's own statement is then a no-op.
 | `JDX_JUMPDRIVE_URL` | plain | `https://<console host>/internal/index`. The index fetches `<url>/jwks.json` and POSTs `<url>/authorize`. Use the public origin: the issuer is derived as this URL minus `/internal/index` and must equal the control plane's `JUMPDRIVE_BASE_URL` (`JDX_JUMPDRIVE_ISSUER` overrides it) |
 | `JDX_JUMPDRIVE_VERIFY` | plain | `jwks` \| `authorize` \| `dual`. Use `dual` for rollout, `jwks` as the end state, and `authorize` as the incident fallback |
 | `JDX_JUMPDRIVE_SECRET` | **SECRET** | the index→control-plane service bearer for `/authorize`, equal to the control plane's `JUMPDRIVE_INDEX_AUTHORIZE_SECRET`. Required with `JDX_IDENTITY=jumpdrive` in every verify mode |
-| `JDX_HEYARR_URL` / `JDX_HEYARR_TOKEN` | plain / **SECRET** | optional, and only together: a token with no URL is a boot refusal |
 
 ## Changing the live app
 

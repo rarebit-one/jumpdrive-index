@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rarebit-one/jumpdrive-index/internal/config"
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
 	"github.com/rarebit-one/jumpdrive-index/internal/fabricauth"
 	"github.com/rarebit-one/jumpdrive-index/internal/heyarr"
@@ -41,6 +42,11 @@ func runIngest(log *slog.Logger, args []string) error {
 		return fmt.Errorf("ingest: --ref is required")
 	}
 
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
 	st, err := sqlite.Open(sqlite.Options{
 		Path:       *db,
 		Thresholds: domain.Thresholds{AutoMerge: 0.94, Review: 0.86},
@@ -63,7 +69,7 @@ func runIngest(log *slog.Logger, args []string) error {
 		}
 	}
 
-	ec, err := buildExecCapability()
+	ec, err := buildExecCapability(cfg)
 	if err != nil {
 		return err
 	}
@@ -95,35 +101,35 @@ func runIngest(log *slog.Logger, args []string) error {
 }
 
 // buildExecCapability wires the out-of-process ingest capability, selecting the
-// transcription backend from env (mirroring main.go's buildEmbedder). Unset — the
-// default — keeps today's local Whisper subprocess. JDX_INGEST_TRANSCRIBE=fabric
+// transcription backend from config (mirroring main.go's buildEmbedder). Unset —
+// the default — keeps today's local Whisper subprocess. IngestTranscribe=fabric
 // re-pins the speech-to-text step to the TechnoCore switchboard (Farcaster) — an
 // OpenAI-compatible /v1/audio/transcriptions endpoint — reading its base URL,
-// model and optional bearer from JDX_INGEST_TRANSCRIBE_{URL,MODEL,TOKEN}, keeping
+// model and optional bearer from IngestTranscribeURL/Model/Token, keeping
 // the ML off-host so the binary stays static / CGO-off (ADR-0004).
-func buildExecCapability() (*ingest.ExecCapability, error) {
+func buildExecCapability(cfg *config.Config) (*ingest.ExecCapability, error) {
 	ec := ingest.NewExecCapability()
-	switch t := os.Getenv("JDX_INGEST_TRANSCRIBE"); t {
+	switch cfg.IngestTranscribe {
 	case "", "local", "whisper":
 		// Default: the local Whisper subprocess (unchanged behaviour).
 	case "fabric":
-		// Same Voidbind-vs-bearer choice as the embedder: when JDX_FABRIC_DEVICE_DIR
+		// Same Voidbind-vs-bearer choice as the embedder: when FabricDeviceDir
 		// names an enrolled device store, the transcriber presents a per-request
 		// Device credential (fabric in FARCASTER_AUTH_MODE=voidbind) instead of the
 		// bearer. Transcription can be slow, so the client keeps a long timeout.
-		dev, err := fabricauth.Client(os.Getenv("JDX_FABRIC_DEVICE_DIR"), 10*time.Minute)
+		dev, err := fabricauth.Client(cfg.FabricDeviceDir, 10*time.Minute)
 		if err != nil {
 			return nil, err
 		}
 		var topts []ingest.FabricTranscriberOption
-		token := secret.Value(os.Getenv("JDX_INGEST_TRANSCRIBE_TOKEN"))
+		token := cfg.IngestTranscribeToken
 		if dev != nil {
 			topts = append(topts, ingest.WithHTTPClient(dev))
 			token = ""
 		}
 		ft, err := ingest.NewFabricTranscriber(
-			os.Getenv("JDX_INGEST_TRANSCRIBE_URL"),
-			os.Getenv("JDX_INGEST_TRANSCRIBE_MODEL"),
+			cfg.IngestTranscribeURL,
+			cfg.IngestTranscribeModel,
 			token,
 			topts...,
 		)
@@ -132,7 +138,7 @@ func buildExecCapability() (*ingest.ExecCapability, error) {
 		}
 		ec.Transcriber = ft
 	default:
-		return nil, fmt.Errorf("unknown transcribe provider %q (want local|fabric)", t)
+		return nil, fmt.Errorf("unknown transcribe provider %q (want local|fabric)", cfg.IngestTranscribe)
 	}
 	return ec, nil
 }

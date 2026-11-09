@@ -25,7 +25,6 @@ import (
 	"github.com/rarebit-one/jumpdrive-index/internal/httpapi"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcp"
 	"github.com/rarebit-one/jumpdrive-index/internal/mcpauth"
-	"github.com/rarebit-one/jumpdrive-index/internal/secret"
 	"github.com/rarebit-one/jumpdrive-index/internal/service"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
 	"github.com/rarebit-one/jumpdrive-index/internal/store/postgres"
@@ -78,22 +77,17 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("projection head: %w (did you run MODE=migrate?)", err)
 	}
 
-	am, err := buildAccessModel(cfg, log)
+	am, err := buildAccessModel(cfg)
 	if err != nil {
 		return fmt.Errorf("access model: %w", err)
 	}
 
-	em, err := buildEmbedder()
+	em, err := buildEmbedder(cfg)
 	if err != nil {
 		return fmt.Errorf("embedder: %w", err)
 	}
 
-	// Readiness re-reads the projection head, so the rotation gate fails while the
-	// store is unreachable instead of reporting ready on a live process alone.
-	httpOpts := []httpapi.Option{httpapi.WithReadiness(func(ctx context.Context) error {
-		_, err := st.ProjectionHead(ctx)
-		return err
-	})}
+	var httpOpts []httpapi.Option
 	if cfg.MCPAuthMode == "voidbind" {
 		// The op log is opened (and proven writable) before serving: a remove
 		// that cannot be recorded must stop the boot, not silently not stick.
@@ -110,19 +104,9 @@ func run(log *slog.Logger) error {
 	sigctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	logAttrs := []any{
+	log.Info("jumpdrive-index serving",
 		"addr", cfg.HTTPAddr, "backend", cfg.Backend, "identity", cfg.IdentityMode,
-		"auth", cfg.AuthEnabled, "projection_head", head,
-	}
-	if cfg.IdentityMode == config.IdentityJumpdrive {
-		logAttrs = append(logAttrs, "jumpdrive_url", cfg.JumpdriveURL, "jumpdrive_verify", cfg.JumpdriveVerify,
-			"jumpdrive_issuer", cfg.JumpdriveIssuer)
-	}
-	if cfg.LegacyStarchart && cfg.Backend == config.BackendPostgres && cfg.IdentityMode == config.IdentityStarchart {
-		log.Warn("serving postgres with the legacy starchart identity (JDX_LEGACY_STARCHART): a cutover-only " +
-			"escape hatch; move to JDX_IDENTITY=jumpdrive (jumpdrive-web#748)")
-	}
-	log.Info("jumpdrive-index serving", logAttrs...)
+		"auth", cfg.AuthEnabled, "projection_head", head)
 	return srv.Serve(sigctx, cfg.HTTPAddr)
 }
 
@@ -143,7 +127,7 @@ func openStore(ctx context.Context, cfg *config.Config) (store.Store, error) {
 }
 
 // buildAccessModel wires the configured identity seam.
-func buildAccessModel(cfg *config.Config, log *slog.Logger) (access.Model, error) {
+func buildAccessModel(cfg *config.Config) (access.Model, error) {
 	switch cfg.IdentityMode {
 	case config.IdentityStarchart:
 		var scfg starchart.Config
@@ -160,43 +144,40 @@ func buildAccessModel(cfg *config.Config, log *slog.Logger) (access.Model, error
 	case config.IdentityJumpdrive:
 		return jumpdrive.New(jumpdrive.Config{
 			BaseURL:      cfg.JumpdriveURL,
-			SharedSecret: cfg.JumpdriveSecret.Reveal(),
-			Mode:         jumpdrive.VerifyMode(cfg.JumpdriveVerify),
-			Issuer:       cfg.JumpdriveIssuer,
-			Logger:       log,
+			SharedSecret: os.Getenv("JDX_JUMPDRIVE_SECRET"),
 		})
 	default:
 		return nil, fmt.Errorf("unknown identity mode %q", cfg.IdentityMode)
 	}
 }
 
-// buildEmbedder wires the optional embedding provider from env. "none" (the
-// default) disables the semantic path; "ollama" needs JDX_EMBED_URL +
-// JDX_EMBED_MODEL; "fabric" is the TechnoCore switchboard (Farcaster) — an
-// OpenAI-compatible /v1/embeddings endpoint. The fabric client authenticates
-// with a shared JDX_EMBED_TOKEN bearer, OR — when JDX_FABRIC_DEVICE_DIR names an
-// enrolled Voidbind device store — with a per-request Device credential (for a
-// fabric running FARCASTER_AUTH_MODE=voidbind). Either way no model runs in-process
+// buildEmbedder wires the optional embedding provider from config. EmbedProvider
+// "" or "none" (the default) disables the semantic path; "ollama" needs
+// EmbedURL + EmbedModel; "fabric" is the TechnoCore switchboard (Farcaster) —
+// an OpenAI-compatible /v1/embeddings endpoint. The fabric client authenticates
+// with a shared EmbedToken bearer, OR — when FabricDeviceDir names an enrolled
+// Voidbind device store — with a per-request Device credential (for a fabric
+// running FARCASTER_AUTH_MODE=voidbind). Either way no model runs in-process
 // so the binary stays static / CGO-off.
-func buildEmbedder() (embed.Embedder, error) {
-	switch p := os.Getenv("JDX_EMBED_PROVIDER"); p {
+func buildEmbedder(cfg *config.Config) (embed.Embedder, error) {
+	switch cfg.EmbedProvider {
 	case "", "none":
 		return nil, nil
 	case "ollama":
-		return embed.NewOllama(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"))
+		return embed.NewOllama(cfg.EmbedURL, cfg.EmbedModel)
 	case "fabric":
 		// Voidbind Device auth takes precedence over the bearer when a device
 		// store is configured: hand the fabric client the Device-credential http
 		// client and drop the bearer (they are alternatives, not layered).
-		dev, err := fabricauth.Client(os.Getenv("JDX_FABRIC_DEVICE_DIR"), 30*time.Second)
+		dev, err := fabricauth.Client(cfg.FabricDeviceDir, 30*time.Second)
 		if err != nil {
 			return nil, err
 		}
 		if dev != nil {
-			return embed.NewFabric(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"), "", embed.WithFabricHTTPClient(dev))
+			return embed.NewFabric(cfg.EmbedURL, cfg.EmbedModel, "", embed.WithFabricHTTPClient(dev))
 		}
-		return embed.NewFabric(os.Getenv("JDX_EMBED_URL"), os.Getenv("JDX_EMBED_MODEL"), secret.Value(os.Getenv("JDX_EMBED_TOKEN")))
+		return embed.NewFabric(cfg.EmbedURL, cfg.EmbedModel, cfg.EmbedToken)
 	default:
-		return nil, fmt.Errorf("unknown embed provider %q (want none|ollama|fabric)", p)
+		return nil, fmt.Errorf("unknown embed provider %q (want none|ollama|fabric)", cfg.EmbedProvider)
 	}
 }
