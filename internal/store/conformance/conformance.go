@@ -97,14 +97,6 @@ func mkEntityVec(typ, name, vis, owner, model string, vec []float32, ext ...doma
 	return e
 }
 
-// vectorsSupported probes whether the adapter implements vector search, so the
-// vector subtests skip (rather than fail) on an adapter that hasn't built it yet.
-func vectorsSupported(st store.Store) bool {
-	_, err := st.SemanticSearch(ctx, readAF("probe"),
-		store.VectorQuery{Model: "probe@2", Vector: []float32{1, 0}, Limit: 1})
-	return !errors.Is(err, store.ErrNotImplemented)
-}
-
 func mustEdge(t *testing.T, st store.Store, pred string, from, to domain.EntityID, vis, owner, writer, dedupe string) {
 	t.Helper()
 	_, err := st.AppendEdgeFact(ctx, store.AppendEdgeInput{
@@ -316,9 +308,6 @@ func testRebuild(t *testing.T, st store.Store) {
 // the outcomes deterministic. Similarity to the base vector [1,0] is set exactly
 // via vecAt.
 func testVectorResolve(t *testing.T, st store.Store) {
-	if !vectorsSupported(st) {
-		t.Skip("adapter has no vector search yet")
-	}
 	const model = "test@2"
 	base := vecAt(1.0)
 
@@ -357,9 +346,6 @@ func testVectorResolve(t *testing.T, st store.Store) {
 // access filter (filter-then-rank): a non-owner never sees another principal's
 // private entity even if it is the closest match.
 func testSemanticSearch(t *testing.T, st store.Store) {
-	if !vectorsSupported(st) {
-		t.Skip("adapter has no vector search yet")
-	}
 	const model = "srch@2"
 	mustAppend(t, st, mkEntityVec("Movie", "near", "public", "kate", model, vecAt(0.98)), "kate", "s1")
 	mustAppend(t, st, mkEntityVec("Movie", "far", "public", "kate", model, vecAt(0.10)), "kate", "s2")
@@ -398,10 +384,6 @@ func testSemanticSearch(t *testing.T, st store.Store) {
 // public. alice (owns H and e5) sees the whole graph. This proves access is
 // filtered per hop on edges AND nodes independently.
 func testNeighbors(t *testing.T, st store.Store) {
-	if _, err := st.Neighbors(ctx, readAF("probe"), store.NeighborQuery{Start: "none"}); errors.Is(err, store.ErrNotImplemented) {
-		t.Skip("adapter has no traversal yet")
-	}
-
 	a := mustAppend(t, st, mkEntity("Movie", "A", "public", "kate"), "kate", "na")
 	b := mustAppend(t, st, mkEntity("Movie", "B", "public", "kate"), "kate", "nb")
 	c := mustAppend(t, st, mkEntity("Movie", "C", "public", "kate"), "kate", "nc")
@@ -471,9 +453,6 @@ func testProposals(t *testing.T, st store.Store) {
 			t.Fatalf("marshal input: %v", err)
 		}
 		id, err := st.Propose(ctx, store.Proposal{Kind: domain.FactEntityAsserted, Proposer: "kate", Space: "fam", Payload: payload})
-		if errors.Is(err, store.ErrNotImplemented) {
-			t.Skip("adapter has no governed writes yet")
-		}
 		if err != nil {
 			t.Fatalf("Propose: %v", err)
 		}
@@ -584,17 +563,9 @@ func testDirectMergeAndPropUnion(t *testing.T, st store.Store) {
 	}
 }
 
-func fullTextSupported(st store.Store) bool {
-	_, err := st.FullTextSearch(ctx, readAF("probe"), store.TextQuery{Text: "probe", Limit: 1})
-	return !errors.Is(err, store.ErrNotImplemented)
-}
-
 // testFullTextSearch checks FTS matches an entity's text and is access-filtered:
 // a caller never sees another principal's private entity even when it matches.
 func testFullTextSearch(t *testing.T, st store.Store) {
-	if !fullTextSupported(st) {
-		t.Skip("adapter has no full-text search yet")
-	}
 	mustAppend(t, st, mkEntityProps("Movie", `{"name":"Alien","abstract":"a chestburster erupts"}`, "public", "kate"), "kate", "ft1")
 	mustAppend(t, st, mkEntityProps("Movie", `{"name":"The Matrix","abstract":"bullet time"}`, "public", "kate"), "kate", "ft2")
 	// alice's PRIVATE entity also contains the term; kate must not see it.
@@ -616,16 +587,8 @@ func testFullTextSearch(t *testing.T, st store.Store) {
 	}
 }
 
-func retractEdgeSupported(st store.Store) bool {
-	err := st.RetractEdge(ctx, "probe-no-edge", "probe", "probe-key")
-	return !errors.Is(err, store.ErrNotImplemented)
-}
-
 // testRetractEdge checks a retracted edge disappears from traversal.
 func testRetractEdge(t *testing.T, st store.Store) {
-	if !retractEdgeSupported(st) {
-		t.Skip("adapter has no edge retraction yet")
-	}
 	a := mustAppend(t, st, mkEntity("Movie", "A", "public", "kate"), "kate", "re-a")
 	b := mustAppend(t, st, mkEntity("Movie", "B", "public", "kate"), "kate", "re-b")
 	edge, err := st.AppendEdgeFact(ctx, store.AppendEdgeInput{

@@ -114,7 +114,7 @@ func (s *Service) Search(ctx context.Context, bearer string, q SearchQuery) ([]s
 	}
 
 	ft, err := s.store.FullTextSearch(ctx, af, store.TextQuery{Text: q.Text, Type: q.Type, Limit: limit})
-	if err != nil && !errors.Is(err, store.ErrNotImplemented) {
+	if err != nil {
 		return nil, err
 	}
 	if s.embedder == nil || strings.TrimSpace(q.Text) == "" {
@@ -128,7 +128,7 @@ func (s *Service) Search(ctx context.Context, bearer string, q SearchQuery) ([]s
 	sem, serr := s.store.SemanticSearch(ctx, af, store.VectorQuery{
 		Vector: vecs[0], Model: s.embedder.Model(), Type: q.Type, Limit: limit,
 	})
-	if serr != nil && !errors.Is(serr, store.ErrNotImplemented) {
+	if serr != nil {
 		return nil, serr
 	}
 	return fuseRRF(limit, ft, sem), nil
