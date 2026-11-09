@@ -30,9 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Build-tagged files are invisible to a lint run on another platform, so
-        # lint every OS the binary is built for.
-        goos: [linux, darwin, windows]
+        # Only linux: this repo has no OS-specific build tags, so a single lint
+        # leg is sufficient.
+        goos: [linux]
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: amd64

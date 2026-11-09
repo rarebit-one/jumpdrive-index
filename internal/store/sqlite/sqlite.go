@@ -14,11 +14,9 @@ import (
 	"context"
 	"database/sql"
 	"embed"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
-	"math"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +27,7 @@ import (
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
+	"github.com/rarebit-one/jumpdrive-index/internal/store/internal/codec"
 )
 
 //go:embed all:migrations
@@ -222,22 +221,9 @@ func (s *Store) tsNow() string { return s.now().UTC().Format(time.RFC3339Nano) }
 
 func fmtTS(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-// encodeVec / decodeVec serialize a float32 vector as little-endian bytes.
-func encodeVec(v []float32) []byte {
-	b := make([]byte, len(v)*4)
-	for i, f := range v {
-		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(f))
-	}
-	return b
-}
-
-func decodeVec(b []byte) []float32 {
-	v := make([]float32, len(b)/4)
-	for i := range v {
-		v[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
-	}
-	return v
-}
+// encodeVec / decodeVec delegate to the shared codec.
+func encodeVec(v []float32) []byte  { return codec.EncodeVec(v) }
+func decodeVec(b []byte) []float32  { return codec.DecodeVec(b) }
 
 func placeholders(n int) string {
 	if n <= 0 {

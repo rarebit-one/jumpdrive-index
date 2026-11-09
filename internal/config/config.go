@@ -253,7 +253,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		errs = append(errs, errors.New("JDX_HEYARR_TOKEN: set with no JDX_HEYARR_URL (a credential with nowhere to go)"))
 	}
 
-	// ADR-0011: refuse to serve unauthenticated on a routable address.
+	// heyarr ADR-0011: refuse to serve unauthenticated on a routable address.
 	if c.Mode == ModeServe && !c.AuthEnabled && isRoutable(c.HTTPAddr) {
 		errs = append(errs, fmt.Errorf(
 			"refusing to serve unauthenticated on routable address %q: enable JDX_AUTH or bind loopback", c.HTTPAddr))
