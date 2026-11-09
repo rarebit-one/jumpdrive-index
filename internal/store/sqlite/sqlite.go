@@ -222,8 +222,8 @@ func (s *Store) tsNow() string { return s.now().UTC().Format(time.RFC3339Nano) }
 func fmtTS(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 // encodeVec / decodeVec delegate to the shared codec.
-func encodeVec(v []float32) []byte  { return codec.EncodeVec(v) }
-func decodeVec(b []byte) []float32  { return codec.DecodeVec(b) }
+func encodeVec(v []float32) []byte { return codec.EncodeVec(v) }
+func decodeVec(b []byte) []float32 { return codec.DecodeVec(b) }
 
 func placeholders(n int) string {
 	if n <= 0 {

@@ -199,8 +199,8 @@ func parseTS(s string) time.Time {
 }
 
 // encodeVec / decodeVec delegate to the shared codec.
-func encodeVec(v []float32) []byte  { return codec.EncodeVec(v) }
-func decodeVec(b []byte) []float32  { return codec.DecodeVec(b) }
+func encodeVec(v []float32) []byte { return codec.EncodeVec(v) }
+func decodeVec(b []byte) []float32 { return codec.DecodeVec(b) }
 
 // argList builds $n placeholders while accumulating their values, so dynamic
 // queries (the access clause, IN lists) number their parameters correctly.
