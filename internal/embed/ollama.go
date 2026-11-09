@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/rarebit-one/jumpdrive-index/internal/httpx"
 )
 
 // Ollama embeds via a local Ollama server's /api/embeddings endpoint — the
@@ -17,10 +19,8 @@ type Ollama struct {
 	http    httpDoer
 }
 
-// httpDoer is the minimal HTTP surface, for testability.
-type httpDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
+// httpDoer is an alias for the shared HTTP seam.
+type httpDoer = httpx.Doer
 
 // OllamaOption configures NewOllama.
 type OllamaOption func(*Ollama)

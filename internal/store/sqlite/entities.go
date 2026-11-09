@@ -12,6 +12,7 @@ import (
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
 	"github.com/rarebit-one/jumpdrive-index/internal/store"
+	"github.com/rarebit-one/jumpdrive-index/internal/store/internal/codec"
 )
 
 const entityCols = `id, type, props, space, owner, visibility,
@@ -608,19 +609,7 @@ func normalizeProvenance(p domain.Provenance, ts time.Time) domain.Provenance {
 	return p
 }
 
-func extractName(props json.RawMessage) string {
-	if len(props) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(props, &m); err != nil {
-		return ""
-	}
-	if n, ok := m["name"].(string); ok {
-		return n
-	}
-	return ""
-}
+func extractName(props json.RawMessage) string { return codec.ExtractName(props) }
 
 func parseTS(s string) time.Time {
 	t, _ := time.Parse(time.RFC3339Nano, s)

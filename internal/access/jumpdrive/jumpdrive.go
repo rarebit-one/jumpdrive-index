@@ -48,6 +48,7 @@ import (
 
 	"github.com/rarebit-one/jumpdrive-index/internal/access"
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
+	"github.com/rarebit-one/jumpdrive-index/internal/httpx"
 )
 
 // ErrUnauthenticated is returned when the credential is rejected: by the
@@ -66,11 +67,8 @@ const AuthorizeContract = "jumpdrive-authorize/v1"
 // logged at error level rather than treated as a user failure.
 const AuthorizeErrServiceSecret = "invalid_service_secret" //nolint:gosec // G101: an /authorize error code, not a credential
 
-// httpDoer is the minimal HTTP seam (satisfied by *http.Client), so tests can
-// drive the model against an httptest.Server or a fake.
-type httpDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
+// httpDoer is an alias for the shared HTTP seam.
+type httpDoer = httpx.Doer
 
 // VerifyMode selects how a credential is trusted (JDX_JUMPDRIVE_VERIFY).
 type VerifyMode string

@@ -1,6 +1,6 @@
 // Package conformance is the cross-adapter behavioural matrix. The SAME suite is
-// run against every store.Store implementation (SQLite today, Postgres next), so
-// the adapters cannot diverge silently — the analogue of jumpdrive-broker's
+// run against every store.Store implementation (SQLite and Postgres), so the
+// adapters cannot diverge silently — the analogue of jumpdrive-broker's
 // SQL-vs-Go drift test, lifted to the whole storage seam. A behaviour that passes
 // on one adapter and fails the other is caught here.
 package conformance

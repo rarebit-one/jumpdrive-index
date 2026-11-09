@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rarebit-one/jumpdrive-index/internal/httpx"
 	"github.com/rarebit-one/jumpdrive-index/internal/secret"
 )
 
@@ -26,11 +27,8 @@ type Transcriber interface {
 	Transcribe(ctx context.Context, audioPath string) (string, error)
 }
 
-// httpDoer is the minimal HTTP surface, for testability (the ingest analogue of
-// the embed package's seam).
-type httpDoer interface {
-	Do(req *http.Request) (*http.Response, error)
-}
+// httpDoer is an alias for the shared HTTP seam.
+type httpDoer = httpx.Doer
 
 // FabricTranscriber routes speech-to-text through the TechnoCore switchboard
 // (Farcaster) — an OpenAI-compatible POST /v1/audio/transcriptions endpoint that
