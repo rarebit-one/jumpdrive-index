@@ -9,7 +9,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/rarebit-one/jumpdrive-index/internal/domain"
@@ -44,25 +43,6 @@ const (
 	IdentityJumpdrive IdentityMode = "jumpdrive" // delegate to Jumpdrive
 )
 
-// JumpdriveVerify selects how the jumpdrive identity backend trusts a
-// credential (JDX_JUMPDRIVE_VERIFY).
-type JumpdriveVerify string
-
-// JumpdriveVerify values.
-const (
-	// VerifyJWKS verifies the ES256 credential locally against the control
-	// plane's JWKS (the production end state; no callback on the hot path).
-	VerifyJWKS JumpdriveVerify = "jwks"
-	// VerifyAuthorize asks the control plane's /authorize (resolver of record).
-	VerifyAuthorize JumpdriveVerify = "authorize"
-	// VerifyDual runs both, enforces the intersection and logs mismatches.
-	VerifyDual JumpdriveVerify = "dual"
-)
-
-// jumpdriveIndexPath is the control-plane route the index's JDX_JUMPDRIVE_URL
-// points at (<console>/internal/index); the issuer defaults to what precedes it.
-const jumpdriveIndexPath = "/internal/index"
-
 // Config is the whole validated configuration.
 type Config struct {
 	Mode         Mode
@@ -75,29 +55,9 @@ type Config struct {
 	// PrincipalsFile is a JSON file describing the starchart access model
 	// (principals + restricted deny-types). Used when IdentityMode=starchart.
 	PrincipalsFile string
-	// LegacyStarchart (JDX_LEGACY_STARCHART=1) is the temporary cutover escape
-	// hatch that lets a Postgres serve run the starchart identity model. Without
-	// it that combination is refused: starchart's static shared principals are
-	// the homelab (SQLite) identity model, and the hosted index takes per-caller
-	// identity (jumpdrive-web docs/index-principal-adr.md, Decision 5.6). It is
-	// deleted with the composite model at the end of the rollout.
-	LegacyStarchart bool
-
-	// JumpdriveURL is the control plane's index route, <console>/internal/index
-	// (the model appends /authorize and /jwks.json). Used when
+	// JumpdriveURL is the base URL of the Jumpdrive authorizer, used when
 	// IdentityMode=jumpdrive.
 	JumpdriveURL string
-	// JumpdriveSecret is the index→control-plane service bearer for /authorize,
-	// equal to the control plane's JUMPDRIVE_INDEX_AUTHORIZE_SECRET. REQUIRED
-	// when IdentityMode=jumpdrive (in every verify mode, so an operator can flip
-	// to authorize or dual during an incident without a second secret change).
-	JumpdriveSecret secret.Value
-	// JumpdriveVerify is jwks (default) | authorize | dual.
-	JumpdriveVerify JumpdriveVerify
-	// JumpdriveIssuer is the `iss` a credential must carry: the control plane's
-	// base URL (its JUMPDRIVE_BASE_URL). Defaults to JumpdriveURL minus a
-	// trailing /internal/index; required when that does not apply.
-	JumpdriveIssuer string
 
 	// HTTPAddr is where the service listens. Loopback is the safe default.
 	HTTPAddr string
@@ -128,12 +88,25 @@ type Config struct {
 	// Thresholds are the resolve vector bands (validated: AutoMerge > Review).
 	Thresholds domain.Thresholds
 
-	// HeyarrURL is the base URL of a heyarr MCP endpoint (…/api/v1/mcp) the index
-	// links to by reference; HeyarrToken is its bearer. Both are OPTIONAL — an
-	// unset URL simply disables heyarr reconciliation. A token set with no URL is
-	// a misconfiguration (a credential armed with nowhere to go) and is rejected.
-	HeyarrURL   string
-	HeyarrToken secret.Value
+	// Embed fields configure the optional semantic-search embedding provider.
+	// EmbedProvider is "" or "none" (no embedder), "ollama", or "fabric".
+	// EmbedURL / EmbedModel are required when a provider is set.
+	// EmbedToken is the fabric bearer; use FabricDeviceDir instead for voidbind auth.
+	EmbedProvider   string
+	EmbedURL        string
+	EmbedModel      string
+	EmbedToken      secret.Value
+	FabricDeviceDir string
+
+	// Ingest fields configure the out-of-process transcription backend for the
+	// `ingest` subcommand. IngestTranscribe is "" / "local" / "whisper" (local
+	// yt-dlp + Whisper, the default) or "fabric" (Farcaster speech-to-text).
+	// IngestTranscribeURL / IngestTranscribeModel are required for fabric.
+	// IngestTranscribeToken is the fabric bearer; use FabricDeviceDir for voidbind.
+	IngestTranscribe       string
+	IngestTranscribeURL    string
+	IngestTranscribeModel  string
+	IngestTranscribeToken  secret.Value
 }
 
 // Load reads and validates configuration from getenv (falls back to os.Getenv
@@ -153,15 +126,20 @@ func Load(getenv func(string) string) (*Config, error) {
 	c := &Config{
 		DSN:                      getenv("JDX_DSN"),
 		PrincipalsFile:           getenv("JDX_PRINCIPALS_FILE"),
-		JumpdriveURL:             strings.TrimRight(getenv("JDX_JUMPDRIVE_URL"), "/"),
-		JumpdriveSecret:          secret.Value(getenv("JDX_JUMPDRIVE_SECRET")),
-		JumpdriveIssuer:          getenv("JDX_JUMPDRIVE_ISSUER"), // verbatim: iss is compared exactly
+		JumpdriveURL:             getenv("JDX_JUMPDRIVE_URL"),
 		HTTPAddr:                 get("JDX_HTTP_ADDR", "127.0.0.1:8090"),
 		MCPAuthMode:              strings.ToLower(get("JDX_MCP_AUTH_MODE", "bearer")),
 		MCPVoidbindTrustFile:     getenv("JDX_MCP_VOIDBIND_TRUST_FILE"),
 		MCPVoidbindMembershipDir: get("JDX_MCP_VOIDBIND_MEMBERSHIP_DIR", "jumpdrive-index-membership"),
-		HeyarrURL:                getenv("JDX_HEYARR_URL"),
-		HeyarrToken:              secret.Value(getenv("JDX_HEYARR_TOKEN")),
+		EmbedProvider:            strings.ToLower(getenv("JDX_EMBED_PROVIDER")),
+		EmbedURL:                 getenv("JDX_EMBED_URL"),
+		EmbedModel:               getenv("JDX_EMBED_MODEL"),
+		EmbedToken:               secret.Value(getenv("JDX_EMBED_TOKEN")),
+		FabricDeviceDir:          getenv("JDX_FABRIC_DEVICE_DIR"),
+		IngestTranscribe:         strings.ToLower(getenv("JDX_INGEST_TRANSCRIBE")),
+		IngestTranscribeURL:      getenv("JDX_INGEST_TRANSCRIBE_URL"),
+		IngestTranscribeModel:    getenv("JDX_INGEST_TRANSCRIBE_MODEL"),
+		IngestTranscribeToken:    secret.Value(getenv("JDX_INGEST_TRANSCRIBE_TOKEN")),
 		Thresholds: domain.Thresholds{
 			AutoMerge: 0.94,
 			Review:    0.86,
@@ -198,15 +176,6 @@ func Load(getenv func(string) string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("JDX_AUTH: unrecognised %q (want 1|0|true|false)", v))
 	}
 
-	// LegacyStarchart: strict like JDX_AUTH, defaulting off.
-	switch v := strings.ToLower(get("JDX_LEGACY_STARCHART", "false")); v {
-	case "1", "true":
-		c.LegacyStarchart = true
-	case "0", "false":
-	default:
-		errs = append(errs, fmt.Errorf("JDX_LEGACY_STARCHART: unrecognised %q (want 1|0|true|false)", v))
-	}
-
 	// MCPAuthMode: a closed set, default-deny on anything else; voidbind needs a
 	// pinned-users file to have anyone to admit.
 	switch c.MCPAuthMode {
@@ -219,6 +188,21 @@ func Load(getenv func(string) string) (*Config, error) {
 		errs = append(errs, fmt.Errorf("JDX_MCP_AUTH_MODE: unrecognised %q (want bearer|voidbind)", c.MCPAuthMode))
 	}
 
+	// EmbedProvider: closed set matching buildEmbedder. "" / "none" is the
+	// default-deny-safe "disabled" value (the same no-op as before this field).
+	switch c.EmbedProvider {
+	case "", "none", "ollama", "fabric":
+	default:
+		errs = append(errs, fmt.Errorf("JDX_EMBED_PROVIDER: unrecognised %q (want none|ollama|fabric)", c.EmbedProvider))
+	}
+
+	// IngestTranscribe: closed set matching buildExecCapability.
+	switch c.IngestTranscribe {
+	case "", "local", "whisper", "fabric":
+	default:
+		errs = append(errs, fmt.Errorf("JDX_INGEST_TRANSCRIBE: unrecognised %q (want local|fabric)", c.IngestTranscribe))
+	}
+
 	if err := c.Thresholds.Validate(); err != nil {
 		errs = append(errs, err)
 	}
@@ -228,29 +212,9 @@ func Load(getenv func(string) string) (*Config, error) {
 	if c.Backend == BackendPostgres && c.DSN == "" {
 		errs = append(errs, errors.New("JDX_DSN: required when JDX_BACKEND=postgres"))
 	}
-	// Identity-aware: the jumpdrive backend needs the control plane's index
-	// route, its service secret, a verify mode and (for jwks/dual) an issuer.
-	switch v := JumpdriveVerify(strings.ToLower(get("JDX_JUMPDRIVE_VERIFY", string(VerifyJWKS)))); v {
-	case VerifyJWKS, VerifyAuthorize, VerifyDual:
-		c.JumpdriveVerify = v
-	default:
-		errs = append(errs, fmt.Errorf("JDX_JUMPDRIVE_VERIFY: unrecognised %q (want jwks|authorize|dual)", v))
-	}
-	if c.Mode == ModeServe && c.IdentityMode == IdentityJumpdrive {
-		errs = append(errs, c.validateJumpdrive()...)
-	}
-	// Starchart is retired for hosted serving: a Postgres serve with the static
-	// shared principal is refused unless the cutover escape hatch is set. Migrate
-	// builds no access model, so it is exempt (its job declares no identity).
-	if c.Mode == ModeServe && c.Backend == BackendPostgres && c.IdentityMode == IdentityStarchart && !c.LegacyStarchart {
-		errs = append(errs, errors.New(
-			"JDX_IDENTITY: starchart is the homelab (sqlite) identity model; refusing it with JDX_BACKEND=postgres "+
-				"(use JDX_IDENTITY=jumpdrive, or set JDX_LEGACY_STARCHART=1 for the cutover window)"))
-	}
-	// A heyarr token armed with no endpoint is a misconfiguration, not a silent
-	// no-op — the credential would never be sent, so fail loud (default-deny).
-	if !c.HeyarrToken.IsZero() && c.HeyarrURL == "" {
-		errs = append(errs, errors.New("JDX_HEYARR_TOKEN: set with no JDX_HEYARR_URL (a credential with nowhere to go)"))
+	// Identity-aware: the Jumpdrive delegate needs an authorizer URL to serve.
+	if c.Mode == ModeServe && c.IdentityMode == IdentityJumpdrive && c.JumpdriveURL == "" {
+		errs = append(errs, errors.New("JDX_JUMPDRIVE_URL: required when JDX_IDENTITY=jumpdrive"))
 	}
 
 	// ADR-0011: refuse to serve unauthenticated on a routable address.
@@ -263,26 +227,6 @@ func Load(getenv func(string) string) (*Config, error) {
 		return nil, errors.Join(errs...)
 	}
 	return c, nil
-}
-
-func (c *Config) validateJumpdrive() []error {
-	var errs []error
-	if c.JumpdriveURL == "" {
-		errs = append(errs, errors.New("JDX_JUMPDRIVE_URL: required when JDX_IDENTITY=jumpdrive"))
-	} else if u, err := url.Parse(c.JumpdriveURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		errs = append(errs, fmt.Errorf("JDX_JUMPDRIVE_URL: %q is not an http(s) URL", c.JumpdriveURL))
-	}
-	if c.JumpdriveSecret.IsZero() {
-		errs = append(errs, errors.New("JDX_JUMPDRIVE_SECRET: required when JDX_IDENTITY=jumpdrive (the control plane's JUMPDRIVE_INDEX_AUTHORIZE_SECRET)"))
-	}
-	if c.JumpdriveIssuer == "" && strings.HasSuffix(c.JumpdriveURL, jumpdriveIndexPath) {
-		c.JumpdriveIssuer = strings.TrimSuffix(c.JumpdriveURL, jumpdriveIndexPath)
-	}
-	if c.JumpdriveIssuer == "" && c.JumpdriveVerify != VerifyAuthorize {
-		errs = append(errs, fmt.Errorf(
-			"JDX_JUMPDRIVE_ISSUER: required with JDX_JUMPDRIVE_VERIFY=%s when JDX_JUMPDRIVE_URL does not end in %s", c.JumpdriveVerify, jumpdriveIndexPath))
-	}
-	return errs
 }
 
 // isRoutable reports whether addr binds something other than loopback. A bare
