@@ -103,10 +103,10 @@ type Config struct {
 	// yt-dlp + Whisper, the default) or "fabric" (Farcaster speech-to-text).
 	// IngestTranscribeURL / IngestTranscribeModel are required for fabric.
 	// IngestTranscribeToken is the fabric bearer; use FabricDeviceDir for voidbind.
-	IngestTranscribe       string
-	IngestTranscribeURL    string
-	IngestTranscribeModel  string
-	IngestTranscribeToken  secret.Value
+	IngestTranscribe      string
+	IngestTranscribeURL   string
+	IngestTranscribeModel string
+	IngestTranscribeToken secret.Value
 }
 
 // Load reads and validates configuration from getenv (falls back to os.Getenv
