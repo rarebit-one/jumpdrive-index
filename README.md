@@ -49,4 +49,4 @@ go vet ./...
 ## License
 
 AGPL-3.0-or-later. Contributions by DCO sign-off (`git commit -s`); no CLA.
-© Rarebit One Pte. Ltd.
+© Rarebit One
