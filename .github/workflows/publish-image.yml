@@ -71,6 +71,7 @@ jobs:
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.licenses=AGPL-3.0-or-later" \
+            --label "org.opencontainers.image.vendor=Rarebit One" \
             -t "${IMAGE}:sha-${GITHUB_SHA}" -t "${IMAGE}:main" dist
           docker push "${IMAGE}:sha-${GITHUB_SHA}"
           docker push "${IMAGE}:main"
