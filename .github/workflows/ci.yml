@@ -43,7 +43,7 @@ jobs:
           git config --global \
             url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: { go-version-file: go.mod, cache: true }
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
@@ -84,7 +84,7 @@ jobs:
           git config --global \
             url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: { go-version-file: go.mod, cache: true }
       # -race is non-negotiable: the store's single-writer/reader-pool split is a
       # concurrency claim, and the cross-adapter conformance suite runs under it.
@@ -106,7 +106,7 @@ jobs:
           git config --global \
             url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: { go-version-file: go.mod, cache: true }
       # CGO_ENABLED=0 is load-bearing: the SQLite adapter is pure-Go
       # (modernc.org/sqlite) precisely so the binary stays static and the
@@ -128,7 +128,7 @@ jobs:
           git config --global \
             url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: { go-version-file: go.mod, cache: true }
       # The milestone gate: gofmt + vet + CGO-off build + the whole test suite
       # (incl. the cross-adapter conformance matrix) under one target.
@@ -172,7 +172,7 @@ jobs:
           git config --global \
             url."https://x-access-token:${{ secrets.AUTOLAND_PAT || secrets.GO_PRIVATE_READ_PAT }}@github.com/".insteadOf \
             "https://github.com/"
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with: { go-version-file: go.mod, cache: true }
       # A silently-skipped gate can pass as green: run the suite verbosely and
       # assert the core Postgres subtests actually ran, not skipped.
